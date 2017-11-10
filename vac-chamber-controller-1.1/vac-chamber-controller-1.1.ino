@@ -36,13 +36,19 @@ SCK (Serial Clock)  ->  A5 on Uno/Pro-Mini, 21 on Mega2560/Due, 3 Leonardo/Pro-M
 
 /* ==== Defines ==== */
 #define SERIAL_BAUD 115200
-#define VAC_PRESSURE_HG 25.0
+#define VAC_PRESSURE_HG 15.0
+#define DEFAULT_TIMER 1000L * 60L * 60L * 6L
 #define NO_OF_SWITCHES 2
 #define SWITCH_VAC 0
 #define SWITCH_MENU 1
-#define MENU_ITEMS 2
+#define MODE_NORMAL 0
+#define MODE_MENU 1
+#define MENU_ITEMS 5
 #define MENUTYPE_FLOAT 0
 #define MENUTYPE_TIME_MMSS 1
+#define MENUTYPE_INT02D 2
+#define MENUTYPE_INT2D 3
+#define MENUTYPE_YESNO 4
 /* ==== END Defines ==== */
 
 /* ==== Global Variables ==== */
@@ -68,8 +74,8 @@ float pressureTarget = 0;
 float pressureSetting = VAC_PRESSURE_HG;
 
 long timerStart = 0;
-long timerMillis = 1000L * 60 * 10; // default 10 minutes
-long timerSetting = 1000L * 60 * 10;
+long timerMillis = DEFAULT_TIMER;
+long timerSetting = DEFAULT_TIMER;
 bool flagSetTimerAtPressure = false;
 
 struct s_menu {
@@ -77,7 +83,13 @@ struct s_menu {
   int type;
   float value;
   float increment;
-} menu[2] = {{"Pressure       ", MENUTYPE_FLOAT, VAC_PRESSURE_HG, 0.05}, {"Timer         ", MENUTYPE_TIME_MMSS, 60000, 500}};
+  float vmax;
+  float vmin;
+} menu[MENU_ITEMS] = {{"Pressure      ", MENUTYPE_FLOAT, VAC_PRESSURE_HG, 0.05, 30, 10}, 
+                      {"Hours         ", MENUTYPE_INT2D, 1, .5, 12, 0}, 
+                      {"Minutes       ", MENUTYPE_INT2D, 0, .5, 59, 0}, 
+                      {"Seconds       ", MENUTYPE_INT2D, 0, .5, 59, 0},
+                      {"Confirm       ", MENUTYPE_YESNO, 0, .5, 1, 0}};
 
 const char signature[17] = "vccEOBJecolyx1.0";
 struct s_EEPROMObject {
@@ -158,11 +170,11 @@ void loop() {
   processControls();
 
   switch(runMode) {
-    case 0: //normal mode    
+    case MODE_NORMAL: //normal mode    
       normalMode();
       break;
 
-    case 1:
+    case MODE_MENU:
       menuMode();
       break;
   }
@@ -185,6 +197,8 @@ void processControls() {
   // switch on pump if toggle is on and pressure is below target (back on if pressure has slipped .2 since last off)
   if (!flagMotorOn && toggleState[SWITCH_VAC] == HIGH && pres > (pressureTarget + 0.2)) {
     digitalWrite(motorPin, HIGH);
+    lcd.setCursor(15, 1);
+    lcd.print("P");
     flagMotorOn = true;
   }
 
@@ -196,29 +210,37 @@ void processControls() {
     }
     
     digitalWrite(motorPin, LOW);
+    lcd.setCursor(15, 1);
+    lcd.print("p");
     flagMotorOn = false;
   }
 }
 
 void processTimer() {
   char buf[8], buf2[9];
-  long diff;
+  long diffS;
 
   // is timer running?
   if (timerStart > 0) {
     // how long for?
-    diff = timerMillis - (millis() - timerStart);
-    lcd.setCursor(11, 0);
-    sprintf(buf, "%2d:%02d", int((diff) / 1000 / 60), int((diff) / 1000) % 60);
+    diffS = (timerMillis - (millis() - timerStart)) / 1000;
+    lcd.setCursor(7, 0);
+    //    if (diffS > 60L * 60L) {
+    sprintf(buf, "%2d:%02d:%02d", int(diffS / (60L * 60L)), int(diffS / 60L) % 60, int(diffS) % 60);
+    //    } else if (diffS > 60L) {
+    //      sprintf(buf, "   %2d:%02d", int(diffS / 60L), int(diffS % 60L));
+    //    } else {
+    //      sprintf(buf, "      %2d", int(diffS % 60L));
+    //    }
     lcd.print(buf);
     dtostrf(pressureTarget, 4, 1, buf);
     sprintf(buf2, "<%s %s", buf, unitString[pressureUnit]);
-    lcd.setCursor(9, 1);
+    lcd.setCursor(11, 1);
     lcd.print(buf);
     
     
     // has timer elapsed?
-    if (diff <= 0) {
+    if (diffS <= 0) {
       // timer elapsed
       timerStart = 0;
       pressureTarget = 0;
@@ -237,6 +259,8 @@ void normalMode() {
     if (toggleState[SWITCH_VAC] == HIGH) {
       pressureTarget = pressureSetting;
       digitalWrite(solenoidPin, HIGH);
+      lcd.setCursor(15, 0);
+      lcd.print("S");
       flagSetTimerAtPressure = true;
     } else {
       pressureTarget = 0;
@@ -244,15 +268,34 @@ void normalMode() {
       digitalWrite(motorPin, LOW);
       digitalWrite(solenoidPin, LOW);
       lcd.clear();
+      lcd.setCursor(15, 0);
+      lcd.print("s");
+      lcd.setCursor(15, 1);
+      lcd.print("p");
       timerStart = 0;
     }
   }
 
   // check if menu switch is pressed
   if (switchPreviousState[SWITCH_MENU] == HIGH && switchState[SWITCH_MENU] == LOW) {
-    runMode = 1;
-    lcd.setCursor(0, 0);
-    lcd.print(menu[0].description);
+    if (pressureTarget > 0) {
+      // if under pressure, cancel program
+      pressureTarget = 0;
+      toggleState[SWITCH_VAC] = LOW;
+      digitalWrite(motorPin, LOW);
+      digitalWrite(solenoidPin, LOW);
+      lcd.clear();
+      lcd.setCursor(15, 0);
+      lcd.print("s");
+      lcd.setCursor(15, 1);
+      lcd.print("p");
+      timerStart = 0;
+    } else {
+      // enter menu mode
+      runMode = MODE_MENU;
+      lcd.setCursor(0, 0);
+      lcd.print(menu[0].description);
+    }
   } else {  
     printBME280Data(&Serial);
   }
@@ -273,6 +316,18 @@ void menuMode() {
     case MENUTYPE_TIME_MMSS:
       sprintf(buf, "%2d:%02d   ", int(menu[menuIndex].value / 1000 / 60), int(menu[menuIndex].value / 1000) % 60);
       break;
+
+    case MENUTYPE_INT02D:
+      sprintf(buf, "%02d   ", int(menu[menuIndex].value));
+      break;
+
+    case MENUTYPE_INT2D:
+      sprintf(buf, "%2d   ", int(menu[menuIndex].value));
+      break;
+
+    case MENUTYPE_YESNO:
+      sprintf(buf, "%s   ", int(menu[menuIndex].value) % 2 == 0 ? "Yes" : "No");
+      break;
   }
   lcd.setCursor(0, 1);
   lcd.print(buf);
@@ -282,25 +337,36 @@ void menuMode() {
   if (aRotaryState != aRotaryLastState) {
     if (digitalRead(outputRotaryB) != aRotaryState) {
       menu[menuIndex].value += menu[menuIndex].increment;
+      if (menu[menuIndex].value > menu[menuIndex].vmax + menu[menuIndex].increment) {
+        menu[menuIndex].value = menu[menuIndex].vmin;
+      }
     } else {
       menu[menuIndex].value -= menu[menuIndex].increment;
+      if (menu[menuIndex].value + menu[menuIndex].increment < menu[menuIndex].vmin) {
+        menu[menuIndex].value = menu[menuIndex].vmax;
+      }
     }
   }
 
   if (switchPreviousState[SWITCH_MENU] == HIGH && switchState[SWITCH_MENU] == LOW) {
     if (++menuIndex >= MENU_ITEMS) {
       // exit menu mode
-      runMode = 0;
+      runMode = MODE_NORMAL;
 
       pressureSetting = menu[0].value;
-      timerMillis = menu[1].value;
+      timerMillis = 60L * 60L * menu[1].value;
+      timerMillis += 60L * menu[2].value;
+      timerMillis += menu[3].value;
+      timerMillis *= 1000;
 
-      // if currently under pressure, adjust the target before leaving menu
-      if (pressureTarget != 0) {
-        pressureTarget = pressureSetting;
-      }
-      
+      toggleState[SWITCH_VAC] = HIGH;
+      pressureTarget = pressureSetting;
+      digitalWrite(solenoidPin, HIGH);
+      lcd.setCursor(15, 0);
+      lcd.print("S");
+      flagSetTimerAtPressure = true;
       digitalWrite(13, HIGH);
+      
       EEPROMObject.pressure = pressureSetting;
       EEPROMObject.timer = timerMillis;
 
