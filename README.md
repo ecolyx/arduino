@@ -14,3 +14,11 @@ Rotary encoder allows selection of vacuum pressure and timer lenghth.
 Switch starts pump cycle
 Timer begins when target pressure is achieved
 Pressure released when timer elapsed or cycle ended with switch
+
+#hydro-clime
+Hydroponic Climate Monitor and Controller
+
+BMP280 Atmospheric pressure and temperature
+DHT11/22 Ambient temperature and humdity
+
+Controls climate making use of aircon/dehumidifier, extractor fans, and heaters.
