@@ -7,10 +7,10 @@
  * 
  ****************************************************/
 #define setTextScale setTextSize
-#define debug_msg(x) Serial.println(x)
-#define debug_msg_pre(x) Serial.print(x)
-//#define debug_msg(x)
-//#define debug_msg_pre(x)
+//#define debug_msg(x) Serial.println(x)
+//#define debug_msg_pre(x) Serial.print(x)
+#define debug_msg(x)
+#define debug_msg_pre(x)
 
 // relay pins
 #define AC_PIN          A0 // aircon
@@ -19,8 +19,8 @@
 #define FN_PIN          A1 // fan (extractor)
 
 // switch pins
-#define SW1_PIN         2
-#define SW2_PIN         3
+#define SW1_PIN         (uint8_t)0
+#define SW2_PIN         (uint8_t)1
 
 // delay period for Climate control after change in settings to prevent over rapid switching when transitioning
 // air con likes at least 5 minutes between cycles, so seems a reasonable rule to apply
@@ -43,17 +43,20 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 #define TIME_HEADER       'T' // Header tag for serial time sync message
 #define TIME_REQUEST      7 // ASCII bell character requests a time sync message 
 
-#define DHT_PIN1          6
-#define DHT_PIN2          8
+#define DHT_PIN1          4
+#define DHT_PIN2          5
 
 #define GROWMINPERIOD     50400
 
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <TFT_ILI9163C.h>
+#include <WiFiEsp.h>
+#include <WiFiEspUdp.h>
 #include <Time.h>
 #include <TimeAlarms.h>
 #include <DHT.h>
+#include <SoftwareSerial.h>
 
 struct s_DisplayDHT {
   uint16_t color;
@@ -96,16 +99,36 @@ static time_t delayCC = 0;
 volatile uint8_t loopMode = 0;
 const uint16_t heartbeat = 5000; // milliseconds looping
 
+SoftwareSerial Serial1(6, 7); // RX, TX
+
+// A UDP instance to let us send and receive packets over UDP
+const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+WiFiEspUDP Udp;
+
 void setup()
 {
-  char *init_msg = "vpdmon init..";
+  char const *init_msg = "vpdmon init..";
   // initialize serial for debugging
-  Serial.begin(57600);
+  Serial.begin(115200);
   debug_msg(init_msg);
+  // initialize serial for ESP module
+  Serial1.begin(9600);
+  // initialize ESP module
+  WiFi.init(&Serial1);
+  debug_msg("Initialised");
 
   displayReset();
   display.setTextColor(WHITE);
   display.println(init_msg);
+  // check for the presence of the shield
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("No WiFi");
+    // don't continue
+    while (true);
+  }
+
+  wifiConnect();
 
   pinMode(AC_PIN, OUTPUT);
   pinMode(CT_PIN, OUTPUT);
@@ -129,11 +152,13 @@ void setup()
   debug_msg_pre("Season: ");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
   isLampOn = true;
+  wifiGetTime();
   loopMode = 0;
   debug_msg_pre("Sunset: ");
   serialClockDisplay(sunSet);
   debug_msg_pre("Sunrise: ");
   serialClockDisplay(sunRise);
+#if 0
   debug_msg_pre("grow min temp on: ");
   debug_msg(minMaxClimates[A_GROW][A_MIN][A_DAY][A_TEMP]);//[G/F][Min/Max][D/N][T/H]
   debug_msg_pre("grow max temp on: ");
@@ -150,6 +175,7 @@ void setup()
   debug_msg(minMaxClimates[A_FLOWER][A_MIN][A_NIGHT][A_TEMP]);
   debug_msg_pre("flower max temp off: ");
   debug_msg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
+#endif
   display.clearScreen();
 }
 
@@ -262,6 +288,109 @@ void loop() {
   debug_msg(isGrowSeason ? "Grow" : "Flower");
   displayTime();
   delay(loop_delay + tim - millis()); // regulates the loop by excluding the time to run loop code
+}
+
+void wifiGetTime() {
+  uint8_t count = 0;
+  IPAddress timeServer(128,138,140,50); // time.nist.gov NTP server
+
+  sendNTPpacket(timeServer); // send an NTP packet to a time server
+  // wait to see if a reply is available
+  delay(1000);
+  while (count < 30) {
+    if (Udp.parsePacket()) {
+      Serial.println("pkt rcvd");
+      // We've received a packet, read the data from it
+      Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+
+      for (int j = 0; j < NTP_PACKET_SIZE; j++) {
+        Serial.print(packetBuffer[j], HEX);
+        Serial.print(" ");
+        if (j % 8 == 7) {
+          Serial.println();
+        }
+      }
+      //the timestamp starts at byte 40 of the received packet and is four bytes,
+      // or two words, long. First, esxtract the two words:
+  
+      uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
+      uint16_t lowWord = word(packetBuffer[42], packetBuffer[43]);
+      // combine the four bytes (two words) into a long integer
+      // this is NTP time (seconds since Jan 1 1900):
+      time_t t = highWord;
+      t = t << 16 | lowWord;
+      Serial.print("Secs since 1/1/1900 = ");
+      Serial.println(t);
+  
+      // now convert NTP time into everyday time:
+      Serial.print("Unix time = ");
+      // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+      const unsigned long seventyYears = 2208988800UL;
+      // subtract seventy years:
+      t = t - seventyYears;
+      // print Unix time:
+      Serial.println(t);
+  
+      // print the hour, minute and second:
+      Serial.print("UTC: ");       // UTC is the time at Greenwich Meridian (GMT)
+      serialClockDisplay(t);
+      setTime(t);
+      count = 30;
+    } else {
+      Serial.println(count++);
+      delay(1000);
+    }
+  }
+}
+
+// send an NTP request to the time server at the given address
+unsigned long sendNTPpacket(IPAddress& address) {
+
+  //Serial.println("1");
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  //Serial.println("2");
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12]  = 49;
+  packetBuffer[13]  = 0x4E;
+  packetBuffer[14]  = 49;
+  packetBuffer[15]  = 52;
+//  packetBuffer[0] = 0x1b;   // LI, Version, Mode
+  
+  //Serial.println("3");
+
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  Udp.beginPacket(address, 123); //NTP requests are to port 123
+  //Serial.println("4");
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  //Serial.println("5");
+  Udp.endPacket();
+  //Serial.println("6");
+}
+
+void wifiConnect() {
+  char ssid[] = "HereBeDragons";            // your network SSID (name)
+  char pass[] = "Sh33laZ1ggy";        // your network password
+  int status = WL_IDLE_STATUS;     // the Wifi radio's status
+
+  // attempt to connect to WiFi network
+  while ( status != WL_CONNECTED) {
+    Serial.print("Connect to WPA: ");
+    Serial.println(ssid);
+    // Connect to WPA/WPA2 network
+    status = WiFi.begin(ssid, pass);
+  }
+
+  Serial.println("Success!");
+
+  Udp.begin(2390);
 }
 
 void switchMode() {
@@ -623,4 +752,3 @@ void readAndDisplayDHT22s() {
     displaySensor(location, A_HUMID);
   }
 }
-
