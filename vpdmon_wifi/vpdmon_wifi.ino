@@ -98,7 +98,7 @@ WiFiEspUDP Udp;
 void setup()
 {
   // initialize serial for debugging
-  Serial.begin(57600);
+  Serial.begin(115200);
   // initialize serial for ESP module
   Serial1.begin(9600);
   // initialize ESP module
