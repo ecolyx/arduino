@@ -9,8 +9,13 @@
 #define setTextScale setTextSize
 //#define debug_msg(x) Serial.println(x)
 //#define debug_msg_pre(x) Serial.print(x)
+//#define debug_msg_pre_h(x) Serial.print(x,HEX)
 #define debug_msg(x)
 #define debug_msg_pre(x)
+#define debug_msg_pre_h(x)
+#define smsg(x) Serial.println(x)
+#define smsg_pre(x) Serial.print(x)
+#define smsg_pre_h(x) Serial.print(x,HEX)
 
 // relay pins
 #define AC_PIN          A0 // aircon
@@ -18,9 +23,11 @@
 #define HT_PIN          A2 // heater
 #define FN_PIN          A1 // fan (extractor)
 
+#if 0
 // switch pins
 #define SW1_PIN         (uint8_t)0
 #define SW2_PIN         (uint8_t)1
+#endif
 
 // delay period for Climate control after change in settings to prevent over rapid switching when transitioning
 // air con likes at least 5 minutes between cycles, so seems a reasonable rule to apply
@@ -42,17 +49,18 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 #define TIME_MSG_LEN      11 // time sync to PC is HEADER followed by Unix time_t as ten ASCII digits
 #define TIME_HEADER       'T' // Header tag for serial time sync message
 #define TIME_REQUEST      7 // ASCII bell character requests a time sync message 
+#define TIMEZONE          -1
 
 #define DHT_PIN1          4
 #define DHT_PIN2          5
 
 #define GROWMINPERIOD     50400
 
+#include <WiFiEsp.h>
+#include <WiFiEspUdp.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <TFT_ILI9163C.h>
-#include <WiFiEsp.h>
-#include <WiFiEspUdp.h>
 #include <Time.h>
 #include <TimeAlarms.h>
 #include <DHT.h>
@@ -97,86 +105,87 @@ bool isLampOn = A_NIGHT, isGrowSeason = A_FLOWER;
 const time_t sunRise = 14400, sunSet = 57600; // flower
 static time_t delayCC = 0;
 volatile uint8_t loopMode = 0;
-const uint16_t heartbeat = 5000; // milliseconds looping
+const uint16_t heartbeat = 30000; // milliseconds looping
 
 SoftwareSerial Serial1(6, 7); // RX, TX
 
 // A UDP instance to let us send and receive packets over UDP
 const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+const int UDP_TIMEOUT = 2000;    // timeout in miliseconds to wait for an UDP packet to arrive
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+int status = WL_IDLE_STATUS;     // the Wifi radio's status
+
+char timeServer[] = "time.nist.gov";  // NTP server
+unsigned int localPort = 2390;        // local port to listen for UDP packets
 WiFiEspUDP Udp;
 
 void setup()
 {
-  char const *init_msg = "vpdmon init..";
+  char const *init_msg = "init..";
   // initialize serial for debugging
   Serial.begin(115200);
   debug_msg(init_msg);
-  // initialize serial for ESP module
-  Serial1.begin(9600);
-  // initialize ESP module
-  WiFi.init(&Serial1);
-  debug_msg("Initialised");
-
   displayReset();
   display.setTextColor(WHITE);
   display.println(init_msg);
-  // check for the presence of the shield
-  if (WiFi.status() == WL_NO_SHIELD) {
-    Serial.println("No WiFi");
-    // don't continue
-    while (true);
-  }
-
-  wifiConnect();
 
   pinMode(AC_PIN, OUTPUT);
   pinMode(CT_PIN, OUTPUT);
-  pinMode(HT_PIN, OUTPUT);
-  pinMode(FN_PIN, OUTPUT);
 
   digitalWrite(AC_PIN, true);
   digitalWrite(CT_PIN, true);
-  digitalWrite(HT_PIN, true);
-  digitalWrite(FN_PIN, true);
-
-  pinMode (SW1_PIN, INPUT_PULLUP);
-  pinMode (SW2_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(SW1_PIN), switchMode, FALLING);
 
   DHTIN.begin();
   DHTOUT.begin();
 
   setTime(sunRise);
   isGrowSeason = GROWMINPERIOD < sunSet - sunRise;
-  debug_msg_pre("Season: ");
-  debug_msg(isGrowSeason ? "Grow" : "Flower");
   isLampOn = true;
-  wifiGetTime();
   loopMode = 0;
-  debug_msg_pre("Sunset: ");
+  smsg_pre("Sunset: ");
   serialClockDisplay(sunSet);
-  debug_msg_pre("Sunrise: ");
+  smsg_pre("Sunrise: ");
   serialClockDisplay(sunRise);
-#if 0
-  debug_msg_pre("grow min temp on: ");
-  debug_msg(minMaxClimates[A_GROW][A_MIN][A_DAY][A_TEMP]);//[G/F][Min/Max][D/N][T/H]
-  debug_msg_pre("grow max temp on: ");
-  debug_msg(minMaxClimates[A_GROW][A_MAX][A_DAY][A_TEMP]);
-  debug_msg_pre("grow min temp off: ");
-  debug_msg(minMaxClimates[A_GROW][A_MIN][A_NIGHT][A_TEMP]);
-  debug_msg_pre("grow max temp off: ");
-  debug_msg(minMaxClimates[A_GROW][A_MAX][A_NIGHT][A_TEMP]);
-  debug_msg_pre("flower min temp on: ");
-  debug_msg(minMaxClimates[A_FLOWER][A_MIN][A_DAY][A_TEMP]);
-  debug_msg_pre("flower max temp on: ");
-  debug_msg(minMaxClimates[A_FLOWER][A_MAX][A_DAY][A_TEMP]);
-  debug_msg_pre("flower min temp off: ");
-  debug_msg(minMaxClimates[A_FLOWER][A_MIN][A_NIGHT][A_TEMP]);
-  debug_msg_pre("flower max temp off: ");
-  debug_msg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
-#endif
+  smsg_pre("grow - on: ");
+  smsg_pre(minMaxClimates[A_GROW][A_MIN][A_DAY][A_TEMP]);//[G/F][Min/Max][D/N][T/H]
+  smsg_pre("- ");
+  smsg_pre(minMaxClimates[A_GROW][A_MAX][A_DAY][A_TEMP]);
+  smsg_pre(", off: ");
+  smsg_pre(minMaxClimates[A_GROW][A_MIN][A_NIGHT][A_TEMP]);
+  smsg_pre(" - ");
+  smsg(minMaxClimates[A_GROW][A_MAX][A_NIGHT][A_TEMP]);
+  smsg_pre("flower - on: ");
+  smsg_pre(minMaxClimates[A_FLOWER][A_MIN][A_DAY][A_TEMP]);
+  smsg_pre(" - ");
+  smsg_pre(minMaxClimates[A_FLOWER][A_MAX][A_DAY][A_TEMP]);
+  smsg_pre(", off: ");
+  smsg_pre(minMaxClimates[A_FLOWER][A_MIN][A_NIGHT][A_TEMP]);
+  smsg_pre(" - ");
+  smsg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
   display.clearScreen();
+  wifiStart();
+}
+
+void wifiStart() {
+  // initialize serial for ESP module
+  Serial1.begin(9600);
+  // initialize ESP module
+  WiFi.init(&Serial1);
+
+  // check for the presence of the shield
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("No WiFi");
+    // don't continue
+  } else {
+    wifiConnect();
+  }
+
+  Udp.begin(localPort);
+}
+
+void wifiRestart() {
+  Udp.stop();
+  wifiStart(); 
 }
 
 void displayReset() {
@@ -190,6 +199,8 @@ void loop() {
   time_t loop_delay = 1000;
   time_t tim = millis();
   
+  wifiGetTime();
+
   // check for input on console
   if (Serial.available()) {
     processSyncMessage();
@@ -200,86 +211,58 @@ void loop() {
   debug_msg_pre("loopMode = ");
   debug_msg(loopMode);
   const uint8_t ul_x = 24, ul_y = 56, ul_scale = 1;
-  switch(loopMode) {
-    char buf[6];
-    
-    case 0:
-      debug_msg_pre("arraySensors[A_NEW][A_IN][A_TEMP] = ");
-      debug_msg(arraySensors[A_NEW][A_IN][A_TEMP]);
-      debug_msg_pre("minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP] = ");
-      debug_msg(minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]);
-      debug_msg_pre("minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP] = ");
-      debug_msg(minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
-      display.setTextScale(1);
-      display.setTextColor(YELLOW);
-//      sprintf(buf, "%02d-%02d", minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP], minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
-      display.fillRect(0, 60, 84, 32, BLACK);
-      display.setCursor(0, 60);
-      display.print(minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]);
-      display.print("-");
-      display.println(minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
-      display.print(isGrowSeason ? "Grow - " : "Flower - ");
-      display.print(isLampOn ? "Day" : "Night");
-      // check the climate
-      if (!changeClimatePending) {
-        if (arraySensors[A_NEW][A_IN][A_TEMP] < minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]) { // inside/new/temp < [G/F][Min/Max][D/N][T/H]
-          makeHotter();
-          debug_msg("makeHotter");
-        } else if (arraySensors[A_NEW][A_IN][A_TEMP] > minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]) { // inside/new/temp > season/max/light/temp
-          makeCooler();
-          debug_msg("makeCooler");
-        } else {
-          // everything is fine
-          isAcOn = false;
-          isFanOn = false;
-          isHeatOn = false;
 
-          // set cooltube to find middle temp of zone, if air-con isn't needed for cooling
-          //TODO - this is where we can worry about humidity
-          if (arraySensors[A_NEW][A_IN][A_TEMP] > minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP] + 
-                                                    (minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP] - minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]) / 2) {
-            isCtOn = true;
-          } else {
-            isCtOn = false;
-          }
-          if (!testMode) DELAY_CC = DELAY_CC_DEFAULT;
-        }
-    
+  debug_msg_pre("arraySensors[A_NEW][A_IN][A_TEMP] = ");
+  debug_msg(arraySensors[A_NEW][A_IN][A_TEMP]);
+  debug_msg_pre("minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP] = ");
+  debug_msg(minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]);
+  debug_msg_pre("minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP] = ");
+  debug_msg(minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
+  display.setTextScale(1);
+  display.setTextColor(YELLOW);
+  display.fillRect(0, 60, 84, 32, BLACK);
+  display.setCursor(0, 60);
+  display.print(minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]);
+  display.print("-");
+  display.println(minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
+  display.print(isGrowSeason ? "Grow - " : "Flower - ");
+  display.print(isLampOn ? "Day" : "Night");
+  // check the climate
+  if (!changeClimatePending) {
+    if (arraySensors[A_NEW][A_IN][A_TEMP] < minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]) { // inside/new/temp < [G/F][Min/Max][D/N][T/H]
+      makeHotter();
+      debug_msg("makeHotter");
+    } else if (arraySensors[A_NEW][A_IN][A_TEMP] > minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]) { // inside/new/temp > season/max/light/temp
+      makeCooler();
+      debug_msg("makeCooler");
+    } else {
+      // everything is fine
+      isAcOn = false;
+      isFanOn = false;
+      isHeatOn = false;
+
+      // set cooltube to find middle temp of zone, if air-con isn't needed for cooling
+      //TODO - this is where we can worry about humidity
+      if (arraySensors[A_NEW][A_IN][A_TEMP] > minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP] + 
+                                                (minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP] - minMaxClimates[isGrowSeason][A_MIN][isLampOn][A_TEMP]) / 2) {
+        isCtOn = true;
+      } else {
+        isCtOn = false;
       }
-    
-      // might be useful for VPD
-      //  hicRoomOld = hicRoom;
-      //  hicRoom = roomSensor.computeHeatIndex(tRoom, hRoom, false);
-      //  hicOutOld = hicOut;
-      //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
-    
-      setRelays();
-      loop_delay = heartbeat;
-      debug_msg(); // blank line on serial
-      break;
+      if (!testMode) DELAY_CC = DELAY_CC_DEFAULT;
+    }
 
-    case 1:
-      attachInterrupt(digitalPinToInterrupt(SW2_PIN), incrementTime, FALLING);
-      // fall through next case
-    case 2:
-      display.setCursor(ul_x, ul_y);
-      display.setTextScale(ul_scale);
-      display.setTextColor(BLACK);
-      display.print(String("^^^^   ").substring(0, 6 * (loopMode - 1)));
-      display.setTextColor(WHITE);
-      display.print("^^^^  ");
-      break;
-
-    default:
-      detachInterrupt(digitalPinToInterrupt(SW2_PIN));
-      display.setCursor(ul_x, ul_y);
-      display.setTextScale(ul_scale);
-      display.setTextColor(BLACK);
-      display.print(String("^^^^^^^^^^"));
-      loopMode = 0;
-      debug_msg(loopMode);
-      break;
   }
+
+  // might be useful for VPD
+  //  hicRoomOld = hicRoom;
+  //  hicRoom = roomSensor.computeHeatIndex(tRoom, hRoom, false);
+  //  hicOutOld = hicOut;
+  //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
+
+  setRelays();
+  loop_delay = heartbeat;
+  smsg(); // blank line on serial
 
   time_t timeOfDay = now() % 86400;
   isLampOn = sunRise < timeOfDay && timeOfDay < sunSet;
@@ -291,67 +274,70 @@ void loop() {
 }
 
 void wifiGetTime() {
+  static time_t t = 0;
   uint8_t count = 0;
-  IPAddress timeServer(128,138,140,50); // time.nist.gov NTP server
 
-  sendNTPpacket(timeServer); // send an NTP packet to a time server
-  // wait to see if a reply is available
-  delay(1000);
-  while (count < 30) {
-    if (Udp.parsePacket()) {
-      Serial.println("pkt rcvd");
-      // We've received a packet, read the data from it
-      Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
-      for (int j = 0; j < NTP_PACKET_SIZE; j++) {
-        Serial.print(packetBuffer[j], HEX);
-        Serial.print(" ");
-        if (j % 8 == 7) {
-          Serial.println();
+  if (now() - t >= 10) {
+    sendNTPpacket(timeServer); // send an NTP packet to a time server
+  
+    // wait for a reply for UDP_TIMEOUT miliseconds
+    unsigned long startMs = millis();
+    while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {}
+  
+    while (count < 30) {
+      if (Udp.parsePacket()) {
+        debug_msg("pkt rcvd");
+        // We've received a packet, read the data from it
+        Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+  
+        //the timestamp starts at byte 40 of the received packet and is four bytes,
+        // or two words, long. First, esxtract the two words:
+        uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
+        uint16_t lowWord = word(packetBuffer[42], packetBuffer[43]);
+        // combine the four bytes (two words) into a long integer
+        // this is NTP time (seconds since Jan 1 1900):
+        t = highWord;
+        t = t << 16 | lowWord;
+        debug_msg_pre("Secs since 1/1/1900 = ");
+        debug_msg(t);
+    
+        // now convert NTP time into everyday time:
+        debug_msg_pre("Unix time = ");
+        // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+        const unsigned long seventyYears = 2208988800UL;
+        // subtract seventy years:
+        t = t - seventyYears;
+        // adjust timezone
+        t = t + TIMEZONE * 3600;
+        // print Unix time:
+        debug_msg(t);
+    
+        setTime(t);
+        count = 30;
+      } else {
+        debug_msg_pre("waiting:");
+        count++;
+        debug_msg(count);
+        if (count == 30) {
+          smsg("Udp timeout: restart socket");
+          //wifiRestart();
+          Udp.stop();
+          Udp.begin(localPort);
         }
+        delay(1000);
       }
-      //the timestamp starts at byte 40 of the received packet and is four bytes,
-      // or two words, long. First, esxtract the two words:
-  
-      uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
-      uint16_t lowWord = word(packetBuffer[42], packetBuffer[43]);
-      // combine the four bytes (two words) into a long integer
-      // this is NTP time (seconds since Jan 1 1900):
-      time_t t = highWord;
-      t = t << 16 | lowWord;
-      Serial.print("Secs since 1/1/1900 = ");
-      Serial.println(t);
-  
-      // now convert NTP time into everyday time:
-      Serial.print("Unix time = ");
-      // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-      const unsigned long seventyYears = 2208988800UL;
-      // subtract seventy years:
-      t = t - seventyYears;
-      // print Unix time:
-      Serial.println(t);
-  
-      // print the hour, minute and second:
-      Serial.print("UTC: ");       // UTC is the time at Greenwich Meridian (GMT)
-      serialClockDisplay(t);
-      setTime(t);
-      count = 30;
-    } else {
-      Serial.println(count++);
-      delay(1000);
     }
   }
 }
 
 // send an NTP request to the time server at the given address
-unsigned long sendNTPpacket(IPAddress& address) {
-
-  //Serial.println("1");
+void sendNTPpacket(char *ntpSrv)
+{
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
   // (see URL above for details on the packets)
-  //Serial.println("2");
+
   packetBuffer[0] = 0b11100011;   // LI, Version, Mode
   packetBuffer[1] = 0;     // Stratum, or type of clock
   packetBuffer[2] = 6;     // Polling Interval
@@ -361,18 +347,20 @@ unsigned long sendNTPpacket(IPAddress& address) {
   packetBuffer[13]  = 0x4E;
   packetBuffer[14]  = 49;
   packetBuffer[15]  = 52;
-//  packetBuffer[0] = 0x1b;   // LI, Version, Mode
-  
-  //Serial.println("3");
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  Udp.beginPacket(address, 123); //NTP requests are to port 123
-  //Serial.println("4");
+  debug_msg_pre("Udp:beginPacket to ");
+  debug_msg(ntpSrv);
+  Udp.beginPacket(ntpSrv, 123); //NTP requests are to port 123
+
+//  debug_msg_pre("Udp:write pkt ");
+//  debug_msg(NTP_PACKET_SIZE);
   Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  //Serial.println("5");
+
+//  debug_msg("Udp:endPacket");
   Udp.endPacket();
-  //Serial.println("6");
+  debug_msg("pkt sent");
 }
 
 void wifiConnect() {
@@ -382,40 +370,10 @@ void wifiConnect() {
 
   // attempt to connect to WiFi network
   while ( status != WL_CONNECTED) {
-    Serial.print("Connect to WPA: ");
-    Serial.println(ssid);
+    debug_msg_pre("Connect to WPA: ");
+    debug_msg(ssid);
     // Connect to WPA/WPA2 network
     status = WiFi.begin(ssid, pass);
-  }
-
-  Serial.println("Success!");
-
-  Udp.begin(2390);
-}
-
-void switchMode() {
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
-  // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 200)
-  {
-    loopMode++;
-    debug_msg_pre("Interrupt: loopMode = ");
-    debug_msg(loopMode);
-    last_interrupt_time = interrupt_time;
-  }
-}
-
-void incrementTime() {
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
-  if (interrupt_time - last_interrupt_time > 500 && 0 != loopMode) {
-    int h = hour();
-    setTime(now() + (7200 * (loopMode & 1)) + (60 * (loopMode >> 1)));
-    if (h != hour()) {
-      setTime(now() - 3600);
-    }
-    last_interrupt_time = interrupt_time;
   }
 }
 
@@ -429,31 +387,6 @@ void displayTime() {
 
   digitalClockDisplay(lastTime, ORANGE);
 
-/*
-  if (minMaxClimates[isGrowSeason][1][isLampOn][0] != oldTmax) { // season/max/light/temp
-    String str = String((int)oldTmin) + '.' + String(int(oldTmin * 10) % 10);
-    drawText(str, 1, BLACK, 0, 48);
-    oldTmin = minMaxClimates[isGrowSeason][0][isLampOn][0];
-    str = String((int)oldTmax) + '.' + String(int(oldTmax * 10) % 10);
-    drawText(str, 1, GREEN & BLUE, 0, 48);
-    str = String((int)oldTmax) + '.' + String(int(oldTmax * 10) % 10);
-    drawText(str, 1, BLACK, 0, 56);
-    oldTmax = minMaxClimates[isGrowSeason][1][isLampOn][0];
-    str = String((int)oldTmax) + '.' + String(int(oldTmax * 10) % 10);
-    drawText(str, 1, GREEN & BLUE, 0, 56);
-
-    str = String((int)oldHmin) + '.' + String(int(oldHmin * 10) % 10);
-    drawText(str, 1, BLACK, 72, 48);
-    oldHmin = minMaxClimates[isGrowSeason][0][isLampOn][1];
-    str = String((int)oldHmin) + '.' + String(int(oldHmin * 10) % 10);
-    drawText(str, 1, GREEN & BLUE, 72, 48);
-    str = String((int)oldHmax) + '.' + String(int(oldHmax * 10) % 10);
-    drawText(str, 1, BLACK, 72, 56);
-    oldHmax = minMaxClimates[isGrowSeason][1][isLampOn][1];
-    str = String((int)oldHmax) + '.' + String(int(oldHmax * 10) % 10);
-    drawText(str, 1, GREEN & BLUE, 72, 56);
-  }
-  */
 }
 
 void digitalClockDisplay(time_t t, uint16_t color) {
@@ -501,8 +434,6 @@ void makeCooler() {
     isHeatOn = false;
   } else if (!isCtOn && isLampOn) {
     isCtOn = true;
-//  } else if (!isFanOn) {
-//    isFanOn = true;  
   } else {
     isAcOn = true;
   }
@@ -513,8 +444,6 @@ void makeHotter() {
     isAcOn = false;
   } else if (isCtOn) {
     isCtOn = false;
-//  } else if (isFanOn) {
-//    isFanOn = false;  
   } else {
     isHeatOn = true;
   }
@@ -703,18 +632,15 @@ void serialDigits(int digits) {
 }
 
 void displaySensor(uint8_t location, uint8_t sensor) {
-  debug_msg_pre(0 == location ? "Inside " : "Outside");
-  debug_msg_pre("sensor: ");
-  debug_msg_pre((int)arraySensors[A_NEW][location][sensor]);
-  debug_msg_pre(".");
-  debug_msg_pre(int(arraySensors[A_NEW][location][sensor] * 10) % 10);
-  debug_msg(0 == sensor ? "" : "%");
+  smsg_pre(0 == location ? "In " : "Out ");
+  smsg_pre(arraySensors[A_NEW][location][sensor]);
+  smsg(0 != sensor ? "%" : "");
   if (arraySensors[A_OLD][location][sensor] != arraySensors[A_NEW][location][sensor]) {
     drawText(stringFromFloat(arraySensors[A_OLD][location][sensor]), 2, BLACK, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
     drawText(stringFromFloat(arraySensors[A_NEW][location][sensor]), 2, displayDHT[location][sensor].color, 
                                                                         displayDHT[location][sensor].column, displayDHT[location][sensor].row);
     arraySensors[A_OLD][location][sensor] = arraySensors[A_NEW][location][sensor];
-//    debug_msg("c=" + String(displayDHT[location + sensor * 2].column) + ", r=" + String(displayDHT[location + sensor * 2].row));
+    //debug_msg("c=" + String(displayDHT[location + sensor * 2].column) + ", r=" + String(displayDHT[location + sensor * 2].row));
   }
 }
 
@@ -730,8 +656,9 @@ void readAndDisplayDHT22s() {
     float temp = 0;
     temp = dhtSensors[location].readTemperature();
     if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
-      debug_msg_pre(0 == location ? "Inside " : "Outside ");
-      debug_msg("DHT temp = " + stringFromFloat(temp));
+      debug_msg_pre(0 == location ? "In" : "Out");
+      debug_msg_pre(" DHT t = ");
+      debug_msg(temp);
       if (!testMode) {
         if (temp != 0) {
           arraySensors[A_OLD][location][A_TEMP] = arraySensors[A_NEW][location][A_TEMP];
@@ -742,8 +669,8 @@ void readAndDisplayDHT22s() {
             arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
             arraySensors[A_NEW][location][A_HUMID] = humid;
             
-            debug_msg_pre(0 == location ? "Inside " : "Outside");
-            debug_msg("DHT humidity = " + stringFromFloat(humid));
+            debug_msg_pre(0 == location ? "In" : "Out");
+            debug_msg(" DHT  = " + stringFromFloat(humid));
           }
         }
       }
