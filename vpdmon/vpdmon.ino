@@ -16,6 +16,12 @@
 #define smsg(x) Serial.println(x)
 #define smsg_pre(x) Serial.print(x)
 #define smsg_pre_h(x) Serial.print(x,HEX)
+//#define nmsg(x)
+//#define nmsg_pre(x)
+//#define nmsg_pre_h(x)
+#define nmsg(x) Serial.println(x)
+#define nmsg_pre(x) Serial.print(x)
+#define nmsg_pre_h(x) Serial.print(x,HEX)
 
 // relay pins
 #define AC_PIN          A0 // aircon
@@ -104,7 +110,6 @@ bool isLampOn = A_NIGHT, isGrowSeason = A_FLOWER;
 //const time_t sunRise = 14400, sunSet = 79200; // grow
 const time_t sunRise = 14400, sunSet = 57600; // flower
 static time_t delayCC = 0;
-volatile uint8_t loopMode = 0;
 const uint16_t heartbeat = 30000; // milliseconds looping
 
 SoftwareSerial Serial1(6, 7); // RX, TX
@@ -118,12 +123,16 @@ int status = WL_IDLE_STATUS;     // the Wifi radio's status
 char timeServer[] = "time.nist.gov";  // NTP server
 unsigned int localPort = 2390;        // local port to listen for UDP packets
 WiFiEspUDP Udp;
+WiFiEspClient client;
+
 
 void setup()
 {
   char const *init_msg = "init..";
   // initialize serial for debugging
   Serial.begin(115200);
+    // initialize serial for ESP module
+  Serial1.begin(9600);
   debug_msg(init_msg);
   displayReset();
   display.setTextColor(WHITE);
@@ -141,7 +150,6 @@ void setup()
   setTime(sunRise);
   isGrowSeason = GROWMINPERIOD < sunSet - sunRise;
   isLampOn = true;
-  loopMode = 0;
   smsg_pre("Sunset: ");
   serialClockDisplay(sunSet);
   smsg_pre("Sunrise: ");
@@ -167,8 +175,6 @@ void setup()
 }
 
 void wifiStart() {
-  // initialize serial for ESP module
-  Serial1.begin(9600);
   // initialize ESP module
   WiFi.init(&Serial1);
 
@@ -180,11 +186,12 @@ void wifiStart() {
     wifiConnect();
   }
 
+  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
   Udp.begin(localPort);
 }
 
 void wifiRestart() {
-  Udp.stop();
+  WiFi.disconnect();
   wifiStart(); 
 }
 
@@ -208,8 +215,6 @@ void loop() {
 
   readAndDisplayDHT22s();
 
-  debug_msg_pre("loopMode = ");
-  debug_msg(loopMode);
   const uint8_t ul_x = 24, ul_y = 56, ul_scale = 1;
 
   debug_msg_pre("arraySensors[A_NEW][A_IN][A_TEMP] = ");
@@ -277,7 +282,7 @@ void wifiGetTime() {
   static time_t t = 0;
   uint8_t count = 0;
 
-  if (now() - t >= 10) {
+  if (now() - t >= 3600) {
     sendNTPpacket(timeServer); // send an NTP packet to a time server
   
     // wait for a reply for UDP_TIMEOUT miliseconds
@@ -285,10 +290,17 @@ void wifiGetTime() {
     while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {}
   
     while (count < 30) {
-      if (Udp.parsePacket()) {
-        debug_msg("pkt rcvd");
+      short pkt_s = 0;
+      smsg("Udp.parsePacket()");
+      if (pkt_s = Udp.parsePacket()) {
         // We've received a packet, read the data from it
-        Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+        smsg("Udp.read()");
+        Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
+//      smsg("Udp.parsePacket()");
+//      if (Udp.parsePacket()) {
+//        // We've received a packet, read the data from it
+//        smsg("Udp.read()");
+//        Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
   
         //the timestamp starts at byte 40 of the received packet and is four bytes,
         // or two words, long. First, esxtract the two words:
@@ -319,10 +331,12 @@ void wifiGetTime() {
         count++;
         debug_msg(count);
         if (count == 30) {
-          smsg("Udp timeout: restart socket");
-          //wifiRestart();
-          Udp.stop();
-          Udp.begin(localPort);
+          //smsg("Udp.stop");
+          //Udp.stop();
+          //smsg("Udp.stop");
+          //Udp.begin(localPort);
+          smsg("wifiRestart");
+          wifiRestart();
         }
         delay(1000);
       }
@@ -350,17 +364,31 @@ void sendNTPpacket(char *ntpSrv)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  debug_msg_pre("Udp:beginPacket to ");
-  debug_msg(ntpSrv);
+  smsg_pre("Udp:beginPacket to ");
+  smsg(ntpSrv);
   Udp.beginPacket(ntpSrv, 123); //NTP requests are to port 123
 
-//  debug_msg_pre("Udp:write pkt ");
-//  debug_msg(NTP_PACKET_SIZE);
+  smsg_pre("Udp:write pkt ");
+  smsg(NTP_PACKET_SIZE);
   Udp.write(packetBuffer, NTP_PACKET_SIZE);
 
-//  debug_msg("Udp:endPacket");
+  smsg("Udp:endPacket");
   Udp.endPacket();
   debug_msg("pkt sent");
+}
+
+void sendGraphiteData(char *metric, float value) {
+  smsg("Tcp:beginPacket");
+  strcpy(packetBuffer, metric);
+  strcat(packetBuffer, " ");
+  strcat(packetBuffer, stringFromFloat(value));
+  strcat(packetBuffer, " ");
+  char buf[12];
+  strcat(packetBuffer, itoa(now(), buf, 10));
+
+  client.write(packetBuffer, strlen(packetBuffer));
+
+  smsg("Tcp:endPacket");
 }
 
 void wifiConnect() {
@@ -450,26 +478,28 @@ void makeHotter() {
 }
 
 void setRelays() {
-  static String strOldDisp = "";
-  String strDisp;
+  static char strOldDisp[16] = "";
+  char strDisp[16]; // = {'A', 0, 0, ' ', 'C', 0, 0, ' ', 'H', '0', '0', ' ', 'F','0', '0', 0};
 
-  strDisp = String("A") + switchOrWait(isAcOn, &wasAcOn, AC_PIN);
-  strDisp += String(" C") + switchOrWait(isCtOn, &wasCtOn, CT_PIN);
-  strDisp += String(" H") + switchOrWait(isHeatOn, &wasHeatOn, HT_PIN);
-  strDisp += String(" F") + switchOrWait(isFanOn, &wasFanOn, FN_PIN);
+  strcpy(strDisp, "A");
+  strcat(strDisp, switchOrWait(isAcOn, &wasAcOn, AC_PIN));
+  strcat(strDisp, "C");
+  strcat(strDisp, switchOrWait(isCtOn, &wasCtOn, CT_PIN));
+  strcat(strDisp, "H00 F00");
   debug_msg(strDisp);
   
-  if (!strOldDisp.equals(strDisp)) {
+  if (!strcmp(strDisp, strOldDisp)) {
     const uint8_t x = 0, y = 15;
     drawText(strOldDisp, (uint16_t)BLACK, x, y);
     drawText(strDisp, (uint16_t)RED | BLUE, x, y);
 
-    strOldDisp = strDisp;
+    strcpy(strOldDisp, strDisp);
     delayCC = now() + DELAY_CC;
   }
 }
 
-String switchOrWait(bool new_v, bool *old_v, uint8_t pin) {
+char *switchOrWait(bool new_v, bool *old_v, uint8_t pin) {
+  char ret[3];
   if (*old_v != new_v) {
     signed int wait = delayCC - now();
     if (wait <= 0) {
@@ -482,18 +512,19 @@ String switchOrWait(bool new_v, bool *old_v, uint8_t pin) {
       changeClimatePending = true;
     }
   }
-  return String(new_v) + String(*old_v);
+  sprintf(ret, "%1d%1d", new_v, *old_v);
+  return ret;
 }
 
-void drawText(String text, uint8_t f, uint8_t r, uint8_t g, uint8_t b, uint8_t x, uint8_t y) {
+void drawText(char *text, uint8_t f, uint8_t r, uint8_t g, uint8_t b, uint8_t x, uint8_t y) {
   drawText(text, f, display.Color565(r, g, b), x, y);
 }
 
-void drawText(String text, uint16_t c, uint8_t x, uint8_t y) {
+void drawText(char *text, uint16_t c, uint8_t x, uint8_t y) {
   drawText(text, (uint8_t)1, c, x, y);
 }
 
-void drawText(String text, uint8_t f, uint16_t color, uint8_t x, uint8_t y) {
+void drawText(char *text, uint8_t f, uint16_t color, uint8_t x, uint8_t y) {
   // draws color text, size f, at x, y, relative to font size
   display.setTextScale(f);
   display.setTextColor(color);
@@ -502,6 +533,7 @@ void drawText(String text, uint8_t f, uint16_t color, uint8_t x, uint8_t y) {
 }
 
 bool processSyncMessage() {
+#if 0
   bool dateFormat = false;
   
   // if time sync available from serial port, update time and return true
@@ -602,6 +634,8 @@ bool processSyncMessage() {
   }
 
   return testMode;
+#endif
+  return false;
 }
 
 void serialClockDisplay() {
@@ -609,10 +643,7 @@ void serialClockDisplay() {
 }
 
 void serialClockDisplay(time_t t) {
-  time_t h = t / 3600;
-  time_t m = (t - h * 3600) / 60;
-  time_t s = (t - h * 3600) % 60;
-  serialClockDisplay(h, m, s);  
+  serialClockDisplay(t / 3600, (t / 60) % 60, t % 60);
 }
 
 void serialClockDisplay(time_t h, time_t m, time_t s) {
@@ -644,8 +675,9 @@ void displaySensor(uint8_t location, uint8_t sensor) {
   }
 }
 
-String stringFromFloat(float f) {
-  String ret = String(int(f)) + String(".") + String(int(f * 10) % 10);
+char *stringFromFloat(float f) {
+  char ret[6];
+  sprintf(ret, "%3d.%1d", int(f), int(f * 10) % 10);
   return ret;
 }
 
@@ -659,6 +691,7 @@ void readAndDisplayDHT22s() {
       debug_msg_pre(0 == location ? "In" : "Out");
       debug_msg_pre(" DHT t = ");
       debug_msg(temp);
+      sendGraphiteData("pub.luke.flower.temp", temp);
       if (!testMode) {
         if (temp != 0) {
           arraySensors[A_OLD][location][A_TEMP] = arraySensors[A_NEW][location][A_TEMP];
@@ -669,6 +702,7 @@ void readAndDisplayDHT22s() {
             arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
             arraySensors[A_NEW][location][A_HUMID] = humid;
             
+            sendGraphiteData("pub.luke.flower.humid", humid);
             debug_msg_pre(0 == location ? "In" : "Out");
             debug_msg(" DHT  = " + stringFromFloat(humid));
           }
