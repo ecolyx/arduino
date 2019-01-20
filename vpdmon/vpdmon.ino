@@ -62,6 +62,7 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 
 #define GROWMINPERIOD     50400
 
+//#include <Esp.h>
 #include <WiFiEsp.h>
 #include <WiFiEspUdp.h>
 #include <SPI.h>
@@ -71,6 +72,7 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 #include <TimeAlarms.h>
 #include <DHT.h>
 #include <SoftwareSerial.h>
+#include <avr/wdt.h>
 
 struct s_DisplayDHT {
   uint16_t color;
@@ -81,8 +83,10 @@ struct s_DisplayDHT {
 TFT_ILI9163C display = TFT_ILI9163C(10, 9);
 
 // Construct DHT objects
-DHT dhtSensors[2] = {DHT(DHT_PIN1, DHT11),DHT(DHT_PIN2, DHT22)};
-float arraySensors[2][2][2]; // old/new, in/out, t/h
+DHT dhtSensors[2] = {DHT(DHT_PIN1, DHT22),DHT(DHT_PIN2, DHT11)};
+// how many locations
+#define LOCATIONS   1
+float arraySensors[2][LOCATIONS][2]; // old/new, in/out, t/h
 #define   A_OLD   (uint8_t)0
 #define   A_NEW   (uint8_t)1
 #define   A_IN    (uint8_t)0
@@ -125,14 +129,14 @@ unsigned int localPort = 2390;        // local port to listen for UDP packets
 WiFiEspUDP Udp;
 WiFiEspClient client;
 
+// static char return buffer for strings
+char ret[6];
 
 void setup()
 {
   char const *init_msg = "init..";
   // initialize serial for debugging
   Serial.begin(115200);
-    // initialize serial for ESP module
-  Serial1.begin(9600);
   debug_msg(init_msg);
   displayReset();
   display.setTextColor(WHITE);
@@ -175,6 +179,8 @@ void setup()
 }
 
 void wifiStart() {
+  // initialize serial for ESP module
+  Serial1.begin(9600);
   // initialize ESP module
   WiFi.init(&Serial1);
 
@@ -192,7 +198,10 @@ void wifiStart() {
 
 void wifiRestart() {
   WiFi.disconnect();
-  wifiStart(); 
+  smsg("*** reset ESP");
+  espDrv.reset();
+  wifiStart();
+  wifiGetTime();
 }
 
 void displayReset() {
@@ -203,15 +212,16 @@ void displayReset() {
 
 void loop() {
   static uint8_t loops = 0;
-  time_t loop_delay = 1000;
   time_t tim = millis();
   
-  wifiGetTime();
+  wdt_enable(WDTO_8S);     // enable the watchdog
 
   // check for input on console
   if (Serial.available()) {
     processSyncMessage();
   }
+
+  wifiGetTime();
 
   readAndDisplayDHT22s();
 
@@ -266,7 +276,6 @@ void loop() {
   //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
 
   setRelays();
-  loop_delay = heartbeat;
   smsg(); // blank line on serial
 
   time_t timeOfDay = now() % 86400;
@@ -275,7 +284,8 @@ void loop() {
   debug_msg(isLampOn ? "On" : "Off");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
   displayTime();
-  delay(loop_delay + tim - millis()); // regulates the loop by excluding the time to run loop code
+  wdt_reset();
+  delay(heartbeat + tim - millis()); // regulates the loop by excluding the time to run loop code
 }
 
 void wifiGetTime() {
@@ -294,14 +304,9 @@ void wifiGetTime() {
       smsg("Udp.parsePacket()");
       if (pkt_s = Udp.parsePacket()) {
         // We've received a packet, read the data from it
-        smsg("Udp.read()");
-        Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
-//      smsg("Udp.parsePacket()");
-//      if (Udp.parsePacket()) {
-//        // We've received a packet, read the data from it
-//        smsg("Udp.read()");
-//        Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-  
+        smsg_pre("Udp.read()");
+        smsg(Udp.read(packetBuffer, pkt_s)); // read the packet into the buffer
+          
         //the timestamp starts at byte 40 of the received packet and is four bytes,
         // or two words, long. First, esxtract the two words:
         uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
@@ -364,31 +369,84 @@ void sendNTPpacket(char *ntpSrv)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  smsg_pre("Udp:beginPacket to ");
-  smsg(ntpSrv);
-  Udp.beginPacket(ntpSrv, 123); //NTP requests are to port 123
-
-  smsg_pre("Udp:write pkt ");
-  smsg(NTP_PACKET_SIZE);
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-
-  smsg("Udp:endPacket");
-  Udp.endPacket();
-  debug_msg("pkt sent");
+  debug_msg_pre("Udp:beginPacket to ");
+  debug_msg(ntpSrv);
+  if (Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
+    debug_msg_pre("Udp:write pkt ");
+    debug_msg(NTP_PACKET_SIZE);
+    
+    if (NTP_PACKET_SIZE != Udp.write(packetBuffer, NTP_PACKET_SIZE)) {
+      smsg("Error writing UDP packet");
+      wifiRestart();
+    }
+    
+    debug_msg("Udp:endPacket");
+    if (0 == Udp.endPacket()) {
+      smsg("Error UDP packet not sent");
+    } else {
+      debug_msg("pkt sent");
+    }
+  } else {
+    smsg("Error opening UDP port");
+    wifiRestart();
+  }
 }
 
-void sendGraphiteData(char *metric, float value) {
-  smsg("Tcp:beginPacket");
-  strcpy(packetBuffer, metric);
+// pass metric in packetBuffer
+void sendGraphiteData(float value) {
   strcat(packetBuffer, " ");
   strcat(packetBuffer, stringFromFloat(value));
   strcat(packetBuffer, " ");
   char buf[12];
-  strcat(packetBuffer, itoa(now(), buf, 10));
+  strcat(packetBuffer, ltoa(now() - TIMEZONE * 3600, buf, 10));
+  strcat(packetBuffer, "\n");
+  smsg_pre((char *)packetBuffer);
 
-  client.write(packetBuffer, strlen(packetBuffer));
+  if (strlen(packetBuffer) != client.write(packetBuffer, strlen(packetBuffer))) {
+    smsg("TCP write error");
+    wifiRestart();
+  }
 
-  smsg("Tcp:endPacket");
+  debug_msg("Tcp:endPacket");
+}
+
+void readAndDisplayDHT22s() {
+  uint8_t sensor = 0;
+
+  for (uint8_t location = 0; location < LOCATIONS; location++) { // inside 0 or outside 1 
+    float temp = 0;
+    temp = dhtSensors[location].readTemperature();
+    if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
+      debug_msg_pre(0 == location ? "In" : "Out");
+      debug_msg_pre(" DHT t = ");
+      debug_msg(temp);
+      strcpy(packetBuffer, "pub.luke.roomf.");
+      strcat(packetBuffer, location == 0 ? "in" : "out");
+      strcat(packetBuffer, ".temp");
+      sendGraphiteData(temp);
+      if (!testMode) {
+        if (temp != 0) {
+          arraySensors[A_OLD][location][A_TEMP] = arraySensors[A_NEW][location][A_TEMP];
+          arraySensors[A_NEW][location][A_TEMP] = temp;
+
+          float humid = dhtSensors[location].readHumidity();
+          if (humid != 0) {
+            arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
+            arraySensors[A_NEW][location][A_HUMID] = humid;
+            
+            strcpy(packetBuffer, "pub.luke.roomf.");
+            strcat(packetBuffer, location == 0 ? "in" : "out");
+            strcat(packetBuffer, ".humidity");
+            sendGraphiteData(humid);
+            debug_msg_pre(0 == location ? "In" : "Out");
+            debug_msg(" DHT  = " + stringFromFloat(humid));
+          }
+        }
+      }
+    }
+    displaySensor(location, A_TEMP);
+    displaySensor(location, A_HUMID);
+  }
 }
 
 void wifiConnect() {
@@ -499,7 +557,6 @@ void setRelays() {
 }
 
 char *switchOrWait(bool new_v, bool *old_v, uint8_t pin) {
-  char ret[3];
   if (*old_v != new_v) {
     signed int wait = delayCC - now();
     if (wait <= 0) {
@@ -676,40 +733,6 @@ void displaySensor(uint8_t location, uint8_t sensor) {
 }
 
 char *stringFromFloat(float f) {
-  char ret[6];
   sprintf(ret, "%3d.%1d", int(f), int(f * 10) % 10);
   return ret;
-}
-
-void readAndDisplayDHT22s() {
-  uint8_t sensor = 0;
-
-  for (uint8_t location = 0; location < 2; location++) { // inside 0 or outside 1 
-    float temp = 0;
-    temp = dhtSensors[location].readTemperature();
-    if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
-      debug_msg_pre(0 == location ? "In" : "Out");
-      debug_msg_pre(" DHT t = ");
-      debug_msg(temp);
-      sendGraphiteData("pub.luke.flower.temp", temp);
-      if (!testMode) {
-        if (temp != 0) {
-          arraySensors[A_OLD][location][A_TEMP] = arraySensors[A_NEW][location][A_TEMP];
-          arraySensors[A_NEW][location][A_TEMP] = temp;
-
-          float humid = dhtSensors[location].readHumidity();
-          if (humid != 0) {
-            arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
-            arraySensors[A_NEW][location][A_HUMID] = humid;
-            
-            sendGraphiteData("pub.luke.flower.humid", humid);
-            debug_msg_pre(0 == location ? "In" : "Out");
-            debug_msg(" DHT  = " + stringFromFloat(humid));
-          }
-        }
-      }
-    }
-    displaySensor(location, A_TEMP);
-    displaySensor(location, A_HUMID);
-  }
 }
