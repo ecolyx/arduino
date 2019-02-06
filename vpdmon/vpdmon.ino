@@ -71,8 +71,17 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 #include <Time.h>
 #include <TimeAlarms.h>
 #include <DHT.h>
-#include <SoftwareSerial.h>
 #include <avr/wdt.h>
+
+#ifndef HAVE_HWSERIAL1
+#include "SoftwareSerial.h"
+SoftwareSerial Serial1(6, 7); // RX, TX
+#endif
+
+#include <BME280I2C.h>
+#include <Wire.h>
+BME280I2C bme[2];                   // Default : forced mode, standby time = 1000 ms
+                              // Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
 
 struct s_DisplayDHT {
   uint16_t color;
@@ -85,7 +94,7 @@ TFT_ILI9163C display = TFT_ILI9163C(10, 9);
 // Construct DHT objects
 DHT dhtSensors[2] = {DHT(DHT_PIN1, DHT22),DHT(DHT_PIN2, DHT11)};
 // how many locations
-#define LOCATIONS   1
+#define LOCATIONS   4
 float arraySensors[2][LOCATIONS][2]; // old/new, in/out, t/h
 #define   A_OLD   (uint8_t)0
 #define   A_NEW   (uint8_t)1
@@ -115,8 +124,6 @@ bool isLampOn = A_NIGHT, isGrowSeason = A_FLOWER;
 const time_t sunRise = 14400, sunSet = 57600; // flower
 static time_t delayCC = 0;
 const uint16_t heartbeat = 30000; // milliseconds looping
-
-SoftwareSerial Serial1(6, 7); // RX, TX
 
 // A UDP instance to let us send and receive packets over UDP
 const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
@@ -176,6 +183,16 @@ void setup()
   smsg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
   display.clearScreen();
   wifiStart();
+  // set up the bme sensor
+  debug_msg("Setup BME280 sensors");
+  Wire.begin();
+  for (int s = 0; s < 2; s++) {
+    while(!bme[s].begin()){
+      Serial.println("Could not find BME280 sensor!");
+      delay(1000);
+    }
+  }
+  debug_msg("Setup complete");
 }
 
 void wifiStart() {
@@ -192,7 +209,8 @@ void wifiStart() {
     wifiConnect();
   }
 
-  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
+//  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
+  client.connect("ec2-13-211-87-122.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
   Udp.begin(localPort);
 }
 
@@ -215,6 +233,7 @@ void loop() {
   time_t tim = millis();
   
   wdt_enable(WDTO_8S);     // enable the watchdog
+  wdt_reset();
 
   // check for input on console
   if (Serial.available()) {
@@ -285,6 +304,7 @@ void loop() {
   debug_msg(isGrowSeason ? "Grow" : "Flower");
   displayTime();
   wdt_reset();
+  wdt_disable();
   delay(heartbeat + tim - millis()); // regulates the loop by excluding the time to run loop code
 }
 
@@ -413,7 +433,7 @@ void sendGraphiteData(float value) {
 void readAndDisplayDHT22s() {
   uint8_t sensor = 0;
 
-  for (uint8_t location = 0; location < LOCATIONS; location++) { // inside 0 or outside 1 
+  for (uint8_t location = 0; location < 2; location++) { // inside 0 or outside 1 
     float temp = 0;
     temp = dhtSensors[location].readTemperature();
     if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
@@ -439,13 +459,60 @@ void readAndDisplayDHT22s() {
             strcat(packetBuffer, ".humidity");
             sendGraphiteData(humid);
             debug_msg_pre(0 == location ? "In" : "Out");
-            debug_msg(" DHT  = " + stringFromFloat(humid));
+            debug_msg_pre(" DHT  = ");
+            debug_msg(stringFromFloat(humid));
           }
         }
       }
     }
     displaySensor(location, A_TEMP);
     displaySensor(location, A_HUMID);
+  }
+  readAndDisplayBME280();
+}
+
+void readAndDisplayBME280() {
+  static long lastUpdate = -1000;
+
+  if (lastUpdate + 1000 < millis()) {
+    for (int s = 0; s < 2; s++) {
+      float pressure;
+      BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+      BME280::PresUnit presUnit(BME280::PresUnit_inHg);
+      arraySensors[0][s+2][0] = arraySensors[1][s+2][0];
+      arraySensors[0][s+2][1] = arraySensors[1][s+2][1];
+      ((BME280I2C)bme[s]).read(pressure, arraySensors[1][s+2][0], arraySensors[1][s+2][1], tempUnit, presUnit); 
+      /* BME methods
+        void read(float& pressure, float& temp, float& humidity, bool celsius = false, uint8_t pressureUnit = 0x0)
+        float temp(bool celsius = false);
+        float pres(uint8_t unit = 0);
+        float hum();
+    
+        Keep in mind the temperature is used for humidity and
+        pressure calculations. So it is more effcient to read
+        temperature, humidity and pressure all together.
+       */
+      debug_msg_pre("Pressure = ");
+      debug_msg(pressure);
+      strcpy(packetBuffer, "pub.luke.roomf.bme");
+      strcat(packetBuffer, s == 0 ? "0" : "1");
+      strcat(packetBuffer, ".pressure");
+      sendGraphiteData(pressure);
+      debug_msg_pre("Temp = ");
+      debug_msg(arraySensors[1][s+2][0]);
+      strcpy(packetBuffer, "pub.luke.roomf.bme");
+      strcat(packetBuffer, s == 0 ? "0" : "1");
+      strcat(packetBuffer, ".temp");
+      sendGraphiteData(arraySensors[1][s+2][0]);
+      debug_msg_pre("Humidity = ");
+      debug_msg(arraySensors[1][s+2][1]);
+      strcpy(packetBuffer, "pub.luke.roomf.bme");
+      strcat(packetBuffer, s == 0 ? "0" : "1");
+      strcat(packetBuffer, ".humidity");
+      sendGraphiteData(arraySensors[1][s+2][1]);
+    }
+        
+    lastUpdate=millis();
   }
 }
 

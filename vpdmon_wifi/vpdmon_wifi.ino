@@ -5,7 +5,16 @@
  * 
  * (C) C Stott 2018
  * 
- ****************************************************/
+
+ Connecting the BME280 Sensor:
+  Sensor              ->  Board
+  -----------------------------
+  Vin (Voltage In)    ->  3.3V
+  Gnd (Ground)        ->  Gnd
+  SDA (Serial Data)   ->  A4 on Uno/Pro-Mini, 20 on Mega2560/Due, 2 Leonardo/Pro-Micro
+  SCK (Serial Clock)  ->  A5 on Uno/Pro-Mini, 21 on Mega2560/Due, 3 Leonardo/Pro-Micro
+
+****************************************************/
 #define setTextScale setTextSize
 
 // relay pins
@@ -49,7 +58,12 @@
 #include <Time.h>
 #include <TimeAlarms.h>
 #include <DHT.h>
-#include <SoftwareSerial.h>
+//#include <SoftwareSerial.h>
+//#include <Wire.h>             // Needed for legacy versions of Arduino.
+#include <BME280I2C.h>
+
+BME280I2C bme;                   // Default : forced mode, standby time = 1000 ms
+                              // Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
 
 struct s_DisplayDHT {
   uint16_t color;
@@ -61,7 +75,7 @@ TFT_ILI9163C display = TFT_ILI9163C(8, 10);
 
 // Construct DHT objects
 DHT dhtSensors[2] = {DHT(DHT_PIN1, DHT22),DHT(DHT_PIN2, DHT22)};
-float arraySensors[2][2][2]; // old/new, in/out, t/h
+float arraySensors[3][2][2]; // old/new, in/out, t/h
 #define   A_OLD   (uint8_t)0
 #define   A_NEW   (uint8_t)1
 #define   A_IN    (uint8_t)0
@@ -88,7 +102,7 @@ static time_t delayCC = now() - DELAY_CC;
 
 volatile uint8_t loopMode = 0;
 
-SoftwareSerial Serial1(6, 7); // RX, TX
+//SoftwareSerial Serial1(6, 7); // RX, TX
 
 // A UDP instance to let us send and receive packets over UDP
 const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
@@ -130,6 +144,12 @@ void setup()
   DHTIN.begin();
   DHTOUT.begin();
 
+  // set up the bme sensor
+  while(!bme.begin()){
+    Serial.println("Could not find BME280 sensor!");
+    delay(1000);
+  }
+
   isGrowFlower = GROWMINPERIOD > sunSet - sunRise;
   isLampOn = now() % 86400 > sunRise;
   wifiGetTime();
@@ -145,7 +165,7 @@ void loop() {
     processSyncMessage();
   }
 
-  readAndDisplayDHT22s();
+  readAndDisplaySensors();
 
   switch(loopMode) {
     case 0:
@@ -443,7 +463,8 @@ void displaySensor(uint8_t location, uint8_t sensor) {
   }
 }
 
-void readAndDisplayDHT22s() {
+void readAndDisplaySensors() {
+  static long lastUpdate = millis();
   uint8_t sensor = 0;
 
   for (uint8_t location = 0; location < 2; location++) { // inside 0 or outside 1 
@@ -458,6 +479,33 @@ void readAndDisplayDHT22s() {
     }
 
     displaySensor(location, sensor);
+  }
+
+  if (lastUpdate + 1000 < millis()) {
+    float pressure;
+//    uint8_t pressureUnit(2); // unit: B000 = Pa, B001 = hPa, B010 = Hg, B011 = atm, B100 = bar, B101 = torr, B110 = N/m^2, B111 = psi
+    BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+    BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+    arraySensors[2][0][0] = arraySensors[2][1][0];
+    arraySensors[2][0][1] = arraySensors[2][1][1];
+    bme.read(pressure, arraySensors[2][1][0], arraySensors[2][1][1], tempUnit, presUnit);                   // Parameters: (float& pressure, float& temp, float& humidity, bool celsius = false, uint8_t pressureUnit = 0x0)
+    /* Alternatives to ReadData():
+      float temp(bool celsius = false);
+      float pres(uint8_t unit = 0);
+      float hum();
+  
+      Keep in mind the temperature is used for humidity and
+      pressure calculations. So it is more effcient to read
+      temperature, humidity and pressure all together.
+     */
+    Serial.print("Pressure = ");
+    Serial.println(pressure);
+    Serial.print("Temp = ");
+    Serial.println(arraySensors[2][1][0]);
+    Serial.print("Humidity = ");
+    Serial.println(arraySensors[2][1][1]);
+    
+    lastUpdate=millis();
   }
 }
 
