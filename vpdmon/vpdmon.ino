@@ -312,7 +312,7 @@ void wifiGetTime() {
   static time_t t = 0;
   uint8_t count = 0;
 
-  if (now() - t >= 3600) {
+  if (now() - t >= 24) {
     sendNTPpacket(timeServer); // send an NTP packet to a time server
   
     // wait for a reply for UDP_TIMEOUT miliseconds
@@ -350,12 +350,16 @@ void wifiGetTime() {
         debug_msg(t);
     
         setTime(t);
-        count = 30;
+        break;
       } else {
         debug_msg_pre("waiting:");
         count++;
         debug_msg(count);
-        if (count == 30) {
+        if (0 == count % 10) {
+          strcpy(packetBuffer, "pub.luke.roomf.error.udp.nopkt");
+          sendGraphiteData(1);
+        }
+        if (count >= 30) {
           //smsg("Udp.stop");
           //Udp.stop();
           //smsg("Udp.stop");
@@ -372,6 +376,8 @@ void wifiGetTime() {
 // send an NTP request to the time server at the given address
 void sendNTPpacket(char *ntpSrv)
 {
+  int err = 0;
+
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
@@ -389,19 +395,23 @@ void sendNTPpacket(char *ntpSrv)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  debug_msg_pre("Udp:beginPacket to ");
-  debug_msg(ntpSrv);
-  if (Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
-    debug_msg_pre("Udp:write pkt ");
-    debug_msg(NTP_PACKET_SIZE);
-    
-    if (NTP_PACKET_SIZE != Udp.write(packetBuffer, NTP_PACKET_SIZE)) {
+  strcpy(packetBuffer, "pub.luke.roomf.error.udp.beginPacket");
+  strcat(packetBuffer, ntpSrv);
+  err = Udp.beginPacket(ntpSrv, 123);
+  sendGraphiteData(err);
+  if (err == 1) { //NTP requests are to port 123
+    strcpy(packetBuffer, "pub.luke.roomf.error.udp.write");
+    err = Udp.write(packetBuffer, NTP_PACKET_SIZE);
+    sendGraphiteData(err);
+    if (NTP_PACKET_SIZE != err) {
       smsg("Error writing UDP packet");
       wifiRestart();
     }
     
-    debug_msg("Udp:endPacket");
-    if (0 == Udp.endPacket()) {
+    strcpy(packetBuffer, "pub.luke.roomf.error.udp.endPacket");
+    err = Udp.endPacket();
+    sendGraphiteData(err);
+    if (0 == err) {
       smsg("Error UDP packet not sent");
     } else {
       debug_msg("pkt sent");
@@ -437,12 +447,7 @@ void readAndDisplayDHT22s() {
     float temp = 0;
     temp = dhtSensors[location].readTemperature();
     if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
-      debug_msg_pre(0 == location ? "In" : "Out");
-      debug_msg_pre(" DHT t = ");
-      debug_msg(temp);
-      strcpy(packetBuffer, "pub.luke.roomf.");
-      strcat(packetBuffer, location == 0 ? "in" : "out");
-      strcat(packetBuffer, ".temp");
+      prepGraphiteBuffer("pub.luke.roomf.", ".temp", location, true);
       sendGraphiteData(temp);
       if (!testMode) {
         if (temp != 0) {
@@ -454,13 +459,8 @@ void readAndDisplayDHT22s() {
             arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
             arraySensors[A_NEW][location][A_HUMID] = humid;
             
-            strcpy(packetBuffer, "pub.luke.roomf.");
-            strcat(packetBuffer, location == 0 ? "in" : "out");
-            strcat(packetBuffer, ".humidity");
+            prepGraphiteBuffer("pub.luke.roomf.", ".humidity", location, true);
             sendGraphiteData(humid);
-            debug_msg_pre(0 == location ? "In" : "Out");
-            debug_msg_pre(" DHT  = ");
-            debug_msg(stringFromFloat(humid));
           }
         }
       }
@@ -469,6 +469,16 @@ void readAndDisplayDHT22s() {
     displaySensor(location, A_HUMID);
   }
   readAndDisplayBME280();
+}
+
+void prepGraphiteBuffer(char *ma, char *mb, uint8_t t, bool inOut) {
+  strcpy(packetBuffer, ma);
+  if (inOut) {
+    strcat(packetBuffer, t == 0 ? "in" : "out");
+  } else {
+    strcat(packetBuffer, t == 0 ? "0" : "1");
+  }
+  strcat(packetBuffer, mb);
 }
 
 void readAndDisplayBME280() {
@@ -491,24 +501,13 @@ void readAndDisplayBME280() {
         Keep in mind the temperature is used for humidity and
         pressure calculations. So it is more effcient to read
         temperature, humidity and pressure all together.
-       */
-      debug_msg_pre("Pressure = ");
-      debug_msg(pressure);
-      strcpy(packetBuffer, "pub.luke.roomf.bme");
-      strcat(packetBuffer, s == 0 ? "0" : "1");
-      strcat(packetBuffer, ".pressure");
+      */
+      char *strbme = "pub.luke.roomf.bme";
+      prepGraphiteBuffer(strbme, ".pressure", s, false);
       sendGraphiteData(pressure);
-      debug_msg_pre("Temp = ");
-      debug_msg(arraySensors[1][s+2][0]);
-      strcpy(packetBuffer, "pub.luke.roomf.bme");
-      strcat(packetBuffer, s == 0 ? "0" : "1");
-      strcat(packetBuffer, ".temp");
+      prepGraphiteBuffer(strbme, ".temp", s, false);
       sendGraphiteData(arraySensors[1][s+2][0]);
-      debug_msg_pre("Humidity = ");
-      debug_msg(arraySensors[1][s+2][1]);
-      strcpy(packetBuffer, "pub.luke.roomf.bme");
-      strcat(packetBuffer, s == 0 ? "0" : "1");
-      strcat(packetBuffer, ".humidity");
+      prepGraphiteBuffer(strbme, ".humidity", s, false);
       sendGraphiteData(arraySensors[1][s+2][1]);
     }
         
@@ -539,7 +538,6 @@ void displayTime() {
   serialClockDisplay(lastTime);
 
   digitalClockDisplay(lastTime, ORANGE);
-
 }
 
 void digitalClockDisplay(time_t t, uint16_t color) {
