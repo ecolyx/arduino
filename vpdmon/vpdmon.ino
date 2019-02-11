@@ -70,7 +70,6 @@ uint16_t DELAY_CC = DELAY_CC_DEFAULT;
 #include <TFT_ILI9163C.h>
 #include <Time.h>
 #include <TimeAlarms.h>
-#include <DHT.h>
 #include <avr/wdt.h>
 
 #ifndef HAVE_HWSERIAL1
@@ -80,6 +79,7 @@ SoftwareSerial Serial1(6, 7); // RX, TX
 
 #include <BME280I2C.h>
 #include <Wire.h>
+
 BME280I2C bme[2];                   // Default : forced mode, standby time = 1000 ms
                               // Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
 
@@ -91,10 +91,8 @@ struct s_DisplayDHT {
 
 TFT_ILI9163C display = TFT_ILI9163C(10, 9);
 
-// Construct DHT objects
-DHT dhtSensors[2] = {DHT(DHT_PIN1, DHT22),DHT(DHT_PIN2, DHT11)};
 // how many locations
-#define LOCATIONS   4
+#define LOCATIONS   2
 float arraySensors[2][LOCATIONS][2]; // old/new, in/out, t/h
 #define   A_OLD   (uint8_t)0
 #define   A_NEW   (uint8_t)1
@@ -111,9 +109,6 @@ float minMaxClimates[2][2][2][2] = {{{{16, 30},{22, 30}}, {{20, 50},{26, 50}}},{
 #define   A_NIGHT   false
 #define   A_MAX     (uint8_t)1
 #define   A_MIN     (uint8_t)0
-
-#define DHTIN   dhtSensors[0]
-#define DHTOUT  dhtSensors[1]
 
 bool testMode = false;
 bool changeClimatePending = false;
@@ -155,8 +150,15 @@ void setup()
   digitalWrite(AC_PIN, true);
   digitalWrite(CT_PIN, true);
 
-  DHTIN.begin();
-  DHTOUT.begin();
+  // set up the bme sensor
+  debug_msg("Setup BME280 sensors");
+  Wire.begin();
+  for (int s = 0; s < 2; s++) {
+    while(!bme[s].begin()){
+      Serial.println("Could not find BME280 sensor!");
+      delay(1000);
+    }
+  }
 
   setTime(sunRise);
   isGrowSeason = GROWMINPERIOD < sunSet - sunRise;
@@ -183,49 +185,7 @@ void setup()
   smsg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
   display.clearScreen();
   wifiStart();
-  // set up the bme sensor
-  debug_msg("Setup BME280 sensors");
-  Wire.begin();
-  for (int s = 0; s < 2; s++) {
-    while(!bme[s].begin()){
-      Serial.println("Could not find BME280 sensor!");
-      delay(1000);
-    }
-  }
   debug_msg("Setup complete");
-}
-
-void wifiStart() {
-  // initialize serial for ESP module
-  Serial1.begin(9600);
-  // initialize ESP module
-  WiFi.init(&Serial1);
-
-  // check for the presence of the shield
-  if (WiFi.status() == WL_NO_SHIELD) {
-    Serial.println("No WiFi");
-    // don't continue
-  } else {
-    wifiConnect();
-  }
-
-//  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
-  client.connect("ec2-13-211-87-122.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
-  Udp.begin(localPort);
-}
-
-void wifiRestart() {
-  WiFi.disconnect();
-  smsg("*** reset ESP");
-  espDrv.reset();
-  wifiStart();
-  wifiGetTime();
-}
-
-void displayReset() {
-  display.begin();
-  display.setRotation(1);
-  display.clearScreen();
 }
 
 void loop() {
@@ -242,7 +202,7 @@ void loop() {
 
   wifiGetTime();
 
-  readAndDisplayDHT22s();
+  readAndDisplaySensors();
 
   const uint8_t ul_x = 24, ul_y = 56, ul_scale = 1;
 
@@ -302,17 +262,68 @@ void loop() {
   debug_msg_pre("Lamp: ");
   debug_msg(isLampOn ? "On" : "Off");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
-  displayTime();
+//  displayTime();
   wdt_reset();
   wdt_disable();
   delay(heartbeat + tim - millis()); // regulates the loop by excluding the time to run loop code
 }
 
+void wifiStart() {
+  // initialize serial for ESP module
+  Serial1.begin(9600);
+  // initialize ESP module
+  WiFi.init(&Serial1);
+
+  // check for the presence of the shield
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("No WiFi");
+    // don't continue
+  } else {
+    wifiConnect();
+  }
+
+//  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
+  client.connect("ec2-13-211-87-122.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
+  Udp.begin(localPort);
+  wifiGetTime(true);
+}
+
+void wifiRestart() {
+  WiFi.disconnect();
+  smsg("*** reset ESP");
+  espDrv.reset();
+  wifiStart();
+}
+
+void wifiConnect() {
+  char ssid[] = "HereBeDragons";            // your network SSID (name)
+  char pass[] = "Sh33laZ1ggy";        // your network password
+  int status = WL_IDLE_STATUS;     // the Wifi radio's status
+
+  // attempt to connect to WiFi network
+  while ( status != WL_CONNECTED) {
+    debug_msg_pre("Connect to WPA: ");
+    debug_msg(ssid);
+    // Connect to WPA/WPA2 network
+    status = WiFi.begin(ssid, pass);
+  }
+}
+
+void displayReset() {
+  display.begin();
+  display.setRotation(1);
+  display.clearScreen();
+}
+
 void wifiGetTime() {
+  wifiGetTime(false);
+}
+  
+void wifiGetTime(bool force) {
   static time_t t = 0;
   uint8_t count = 0;
 
-  if (now() - t >= 24) {
+  if (force || now() - t >= 43200) {
     sendNTPpacket(timeServer); // send an NTP packet to a time server
   
     // wait for a reply for UDP_TIMEOUT miliseconds
@@ -320,13 +331,14 @@ void wifiGetTime() {
     while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {}
   
     while (count < 30) {
-      short pkt_s = 0;
-      smsg("Udp.parsePacket()");
+      short pkt_s = 0, pkt_r = 0;
       if (pkt_s = Udp.parsePacket()) {
         // We've received a packet, read the data from it
-        smsg_pre("Udp.read()");
-        smsg(Udp.read(packetBuffer, pkt_s)); // read the packet into the buffer
-          
+        pkt_r = Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
+
+        graphiteMetric("udp.parsePacket", pkt_s);
+        graphiteMetric("udp.read", pkt_r);
+
         //the timestamp starts at byte 40 of the received packet and is four bytes,
         // or two words, long. First, esxtract the two words:
         uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
@@ -356,14 +368,10 @@ void wifiGetTime() {
         count++;
         debug_msg(count);
         if (0 == count % 10) {
-          strcpy(packetBuffer, "pub.luke.roomf.error.udp.nopkt");
-          sendGraphiteData(1);
+          graphiteMetric("udp.error.nopkt", 1);
         }
         if (count >= 30) {
-          //smsg("Udp.stop");
-          //Udp.stop();
-          //smsg("Udp.stop");
-          //Udp.begin(localPort);
+          graphiteMetric("udp.error.restart", 2);
           smsg("wifiRestart");
           wifiRestart();
         }
@@ -371,12 +379,56 @@ void wifiGetTime() {
       }
     }
   }
+  displayTime();
 }
 
 // send an NTP request to the time server at the given address
 void sendNTPpacket(char *ntpSrv)
 {
-  int err = 0;
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12]  = 49;
+  packetBuffer[13]  = 0x4E;
+  packetBuffer[14]  = 49;
+  packetBuffer[15]  = 52;
+
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  debug_msg_pre("Udp:beginPacket to ");
+  debug_msg(ntpSrv);
+  if (Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
+    debug_msg_pre("Udp:write pkt ");
+    debug_msg(NTP_PACKET_SIZE);
+    
+    if (NTP_PACKET_SIZE != Udp.write(packetBuffer, NTP_PACKET_SIZE)) {
+      smsg("Error writing UDP packet");
+      wifiRestart();
+    }
+    
+    debug_msg("Udp:endPacket");
+    if (0 == Udp.endPacket()) {
+      smsg("Error UDP packet not sent");
+    } else {
+      debug_msg("pkt sent");
+    }
+  } else {
+    smsg("Error opening UDP port");
+    wifiRestart();
+  }
+}
+
+// send an NTP request to the time server at the given address
+void sendNTPpacket(char *ntpSrv, bool isNew)
+{
+  int u_b = 0, u_w = 0, u_e = 0;
 
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
@@ -395,28 +447,20 @@ void sendNTPpacket(char *ntpSrv)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  strcpy(packetBuffer, "pub.luke.roomf.error.udp.beginPacket");
-  strcat(packetBuffer, ntpSrv);
-  err = Udp.beginPacket(ntpSrv, 123);
-  sendGraphiteData(err);
-  if (err == 1) { //NTP requests are to port 123
-    strcpy(packetBuffer, "pub.luke.roomf.error.udp.write");
-    err = Udp.write(packetBuffer, NTP_PACKET_SIZE);
-    sendGraphiteData(err);
-    if (NTP_PACKET_SIZE != err) {
+  u_b = Udp.beginPacket(ntpSrv, 123);
+  if (u_b == 1) { //NTP requests are to port 123
+    u_w = Udp.write(packetBuffer, NTP_PACKET_SIZE);
+    u_e = Udp.endPacket();
+    graphiteMetric("udp.write", u_w);
+    graphiteMetric("udp.endpacket", u_e);
+    if (NTP_PACKET_SIZE != u_w) {
       smsg("Error writing UDP packet");
       wifiRestart();
     }
-    
-    strcpy(packetBuffer, "pub.luke.roomf.error.udp.endPacket");
-    err = Udp.endPacket();
-    sendGraphiteData(err);
-    if (0 == err) {
-      smsg("Error UDP packet not sent");
-    } else {
-      debug_msg("pkt sent");
-    }
   } else {
+    u_e = Udp.endPacket();
+    graphiteMetric("udp.beginpacket", u_b);
+    graphiteMetric("udp.endpacket", u_e);
     smsg("Error opening UDP port");
     wifiRestart();
   }
@@ -436,39 +480,32 @@ void sendGraphiteData(float value) {
     smsg("TCP write error");
     wifiRestart();
   }
-
-  debug_msg("Tcp:endPacket");
 }
 
-void readAndDisplayDHT22s() {
-  uint8_t sensor = 0;
+void graphiteMetric(char *m, float v) {
+  graphiteMetric(m, stringFromFloat(v));
+}
 
-  for (uint8_t location = 0; location < 2; location++) { // inside 0 or outside 1 
-    float temp = 0;
-    temp = dhtSensors[location].readTemperature();
-    if (temp != 0) { // ignore possible false values, if temp is actually 0, room is in crisis anyway
-      prepGraphiteBuffer("pub.luke.roomf.", ".temp", location, true);
-      sendGraphiteData(temp);
-      if (!testMode) {
-        if (temp != 0) {
-          arraySensors[A_OLD][location][A_TEMP] = arraySensors[A_NEW][location][A_TEMP];
-          arraySensors[A_NEW][location][A_TEMP] = temp;
+void graphiteMetric(char *m, int v) {
+  char buf[10];
+  graphiteMetric(m, itoa(v, buf, 10));
+}
 
-          float humid = dhtSensors[location].readHumidity();
-          if (humid != 0) {
-            arraySensors[A_OLD][location][A_HUMID] = arraySensors[A_NEW][location][A_HUMID];
-            arraySensors[A_NEW][location][A_HUMID] = humid;
-            
-            prepGraphiteBuffer("pub.luke.roomf.", ".humidity", location, true);
-            sendGraphiteData(humid);
-          }
-        }
-      }
-    }
-    displaySensor(location, A_TEMP);
-    displaySensor(location, A_HUMID);
+void graphiteMetric(char *m, char *v) {
+  char buf[100] = "pub.luke.roomf.";
+  char buf2[12];
+  strcat(buf, m);
+  strcat(buf, " ");
+  strcat(buf, v);
+  strcat(buf, " ");
+  strcat(buf, ltoa(now() - TIMEZONE * 3600, buf2, 10));
+  strcat(buf, "\n");
+  smsg_pre((char)buf);
+
+  if (strlen(buf) != client.write(buf, strlen(buf))) {
+    smsg("TCP write error");
+    wifiRestart();
   }
-  readAndDisplayBME280();
 }
 
 void prepGraphiteBuffer(char *ma, char *mb, uint8_t t, bool inOut) {
@@ -481,7 +518,7 @@ void prepGraphiteBuffer(char *ma, char *mb, uint8_t t, bool inOut) {
   strcat(packetBuffer, mb);
 }
 
-void readAndDisplayBME280() {
+void readAndDisplaySensors() {
   static long lastUpdate = -1000;
 
   if (lastUpdate + 1000 < millis()) {
@@ -489,9 +526,9 @@ void readAndDisplayBME280() {
       float pressure;
       BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
       BME280::PresUnit presUnit(BME280::PresUnit_inHg);
-      arraySensors[0][s+2][0] = arraySensors[1][s+2][0];
-      arraySensors[0][s+2][1] = arraySensors[1][s+2][1];
-      ((BME280I2C)bme[s]).read(pressure, arraySensors[1][s+2][0], arraySensors[1][s+2][1], tempUnit, presUnit); 
+      arraySensors[A_OLD][s][A_TEMP] = arraySensors[A_NEW][s][A_TEMP];
+      arraySensors[A_OLD][s][A_HUMID] = arraySensors[A_NEW][s][A_HUMID];
+      ((BME280I2C)bme[s]).read(pressure, arraySensors[A_NEW][s][A_TEMP], arraySensors[A_NEW][s][A_HUMID], tempUnit, presUnit); 
       /* BME methods
         void read(float& pressure, float& temp, float& humidity, bool celsius = false, uint8_t pressureUnit = 0x0)
         float temp(bool celsius = false);
@@ -506,26 +543,14 @@ void readAndDisplayBME280() {
       prepGraphiteBuffer(strbme, ".pressure", s, false);
       sendGraphiteData(pressure);
       prepGraphiteBuffer(strbme, ".temp", s, false);
-      sendGraphiteData(arraySensors[1][s+2][0]);
+      sendGraphiteData(arraySensors[A_NEW][s][A_TEMP]);
       prepGraphiteBuffer(strbme, ".humidity", s, false);
-      sendGraphiteData(arraySensors[1][s+2][1]);
+      sendGraphiteData(arraySensors[A_NEW][s][A_HUMID]);
+      displaySensor(s, A_TEMP);
+      displaySensor(s, A_HUMID);
     }
         
     lastUpdate=millis();
-  }
-}
-
-void wifiConnect() {
-  char ssid[] = "HereBeDragons";            // your network SSID (name)
-  char pass[] = "Sh33laZ1ggy";        // your network password
-  int status = WL_IDLE_STATUS;     // the Wifi radio's status
-
-  // attempt to connect to WiFi network
-  while ( status != WL_CONNECTED) {
-    debug_msg_pre("Connect to WPA: ");
-    debug_msg(ssid);
-    // Connect to WPA/WPA2 network
-    status = WiFi.begin(ssid, pass);
   }
 }
 
