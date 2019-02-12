@@ -89,7 +89,7 @@ struct s_DisplayDHT {
   uint8_t row;
 } displayDHT[2][2] = {{{GREEN, 0, 0},{BLUE, 10, 0}},{{GREEN, 0, 3},{BLUE, 10, 3}}};
 
-TFT_ILI9163C display = TFT_ILI9163C(10, 9);
+TFT_ILI9163C display = TFT_ILI9163C(53, 9);
 
 // how many locations
 #define LOCATIONS   2
@@ -119,6 +119,7 @@ bool isLampOn = A_NIGHT, isGrowSeason = A_FLOWER;
 const time_t sunRise = 14400, sunSet = 57600; // flower
 static time_t delayCC = 0;
 const uint16_t heartbeat = 30000; // milliseconds looping
+bool have_time = false;
 
 // A UDP instance to let us send and receive packets over UDP
 const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
@@ -285,7 +286,9 @@ void wifiStart() {
 //  client.connect("ec2-13-211-51-150.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
   client.connect("ec2-13-211-87-122.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
   Udp.begin(localPort);
-  wifiGetTime(true);
+  do {
+    wifiGetTime(true);
+  } while(!have_time);
 }
 
 void wifiRestart() {
@@ -323,19 +326,22 @@ void wifiGetTime(bool force) {
   static time_t t = 0;
   uint8_t count = 0;
 
-  if (force || now() - t >= 43200) {
-    sendNTPpacket(timeServer); // send an NTP packet to a time server
+  wdt_reset();
+  if (force || now() - t >= 3600) {
+    sendNTPpacket(timeServer, true); // send an NTP packet to a time server
   
     // wait for a reply for UDP_TIMEOUT miliseconds
     unsigned long startMs = millis();
     while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {}
-  
+    wdt_reset();
+
     while (count < 30) {
       short pkt_s = 0, pkt_r = 0;
       if (pkt_s = Udp.parsePacket()) {
         // We've received a packet, read the data from it
         pkt_r = Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
 
+        wdt_reset();
         graphiteMetric("udp.parsePacket", pkt_s);
         graphiteMetric("udp.read", pkt_r);
 
@@ -362,6 +368,7 @@ void wifiGetTime(bool force) {
         debug_msg(t);
     
         setTime(t);
+        have_time = true;
         break;
       } else {
         debug_msg_pre("waiting:");
@@ -380,49 +387,6 @@ void wifiGetTime(bool force) {
     }
   }
   displayTime();
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(char *ntpSrv)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  debug_msg_pre("Udp:beginPacket to ");
-  debug_msg(ntpSrv);
-  if (Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
-    debug_msg_pre("Udp:write pkt ");
-    debug_msg(NTP_PACKET_SIZE);
-    
-    if (NTP_PACKET_SIZE != Udp.write(packetBuffer, NTP_PACKET_SIZE)) {
-      smsg("Error writing UDP packet");
-      wifiRestart();
-    }
-    
-    debug_msg("Udp:endPacket");
-    if (0 == Udp.endPacket()) {
-      smsg("Error UDP packet not sent");
-    } else {
-      debug_msg("pkt sent");
-    }
-  } else {
-    smsg("Error opening UDP port");
-    wifiRestart();
-  }
 }
 
 // send an NTP request to the time server at the given address
@@ -447,20 +411,27 @@ void sendNTPpacket(char *ntpSrv, bool isNew)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  u_b = Udp.beginPacket(ntpSrv, 123);
-  if (u_b == 1) { //NTP requests are to port 123
+  if (u_b = Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
     u_w = Udp.write(packetBuffer, NTP_PACKET_SIZE);
     u_e = Udp.endPacket();
+    smsg("sending graphite write/end");
     graphiteMetric("udp.write", u_w);
     graphiteMetric("udp.endpacket", u_e);
+
+    smsg("checking packet size");
     if (NTP_PACKET_SIZE != u_w) {
       smsg("Error writing UDP packet");
       wifiRestart();
     }
+    smsg("checking for errors");
+    if (u_e == 0) {
+      smsg("nothing sent");
+    }
   } else {
-    u_e = Udp.endPacket();
+//    u_e = Udp.endPacket();
+    smsg("sending graphite begin");
     graphiteMetric("udp.beginpacket", u_b);
-    graphiteMetric("udp.endpacket", u_e);
+//    graphiteMetric("udp.endpacket", u_e);
     smsg("Error opening UDP port");
     wifiRestart();
   }
@@ -500,11 +471,17 @@ void graphiteMetric(char *m, char *v) {
   strcat(buf, " ");
   strcat(buf, ltoa(now() - TIMEZONE * 3600, buf2, 10));
   strcat(buf, "\n");
-  smsg_pre((char)buf);
+  smsg_pre((char *)buf);
 
-  if (strlen(buf) != client.write(buf, strlen(buf))) {
-    smsg("TCP write error");
-    wifiRestart();
+  if (have_time && strlen(buf) != client.write(buf, strlen(buf))) {
+    if (have_time) {
+      smsg("TCP write error");
+      wifiRestart();
+    }
+  } else {
+    if (!have_time) {
+      smsg("not sent, ***no time");
+    }
   }
 }
 
