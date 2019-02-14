@@ -186,6 +186,8 @@ void setup()
   smsg(minMaxClimates[A_FLOWER][A_MAX][A_NIGHT][A_TEMP]);
   display.clearScreen();
   wifiStart();
+  wdt_reset();
+  wdt_enable(WDTO_8S);     // enable the watchdog
   debug_msg("Setup complete");
 }
 
@@ -193,7 +195,6 @@ void loop() {
   static uint8_t loops = 0;
   time_t tim = millis();
   
-  wdt_enable(WDTO_8S);     // enable the watchdog
   wdt_reset();
 
   // check for input on console
@@ -264,9 +265,12 @@ void loop() {
   debug_msg(isLampOn ? "On" : "Off");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
 //  displayTime();
-  wdt_reset();
+  int d = heartbeat + tim - millis();
+  graphiteMetric("heartbeat", d);
   wdt_disable();
-  delay(heartbeat + tim - millis()); // regulates the loop by excluding the time to run loop code
+  delay(d); // regulates the loop by excluding the time to run loop code
+  wdt_reset();
+  wdt_enable(WDTO_8S);     // enable the watchdog
 }
 
 void wifiStart() {
@@ -332,8 +336,9 @@ void wifiGetTime(bool force) {
   
     // wait for a reply for UDP_TIMEOUT miliseconds
     unsigned long startMs = millis();
-    while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {}
-    wdt_reset();
+    while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {
+      wdt_reset();
+    }
 
     while (count < 30) {
       short pkt_s = 0, pkt_r = 0;
@@ -411,6 +416,7 @@ void sendNTPpacket(char *ntpSrv, bool isNew)
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
+  wdt_reset();
   if (u_b = Udp.beginPacket(ntpSrv, 123) == 1) { //NTP requests are to port 123
     u_w = Udp.write(packetBuffer, NTP_PACKET_SIZE);
     u_e = Udp.endPacket();
@@ -437,22 +443,6 @@ void sendNTPpacket(char *ntpSrv, bool isNew)
   }
 }
 
-// pass metric in packetBuffer
-void sendGraphiteData(float value) {
-  strcat(packetBuffer, " ");
-  strcat(packetBuffer, stringFromFloat(value));
-  strcat(packetBuffer, " ");
-  char buf[12];
-  strcat(packetBuffer, ltoa(now() - TIMEZONE * 3600, buf, 10));
-  strcat(packetBuffer, "\n");
-  smsg_pre((char *)packetBuffer);
-
-  if (strlen(packetBuffer) != client.write(packetBuffer, strlen(packetBuffer))) {
-    smsg("TCP write error");
-    wifiRestart();
-  }
-}
-
 void graphiteMetric(char *m, float v) {
   graphiteMetric(m, stringFromFloat(v));
 }
@@ -460,6 +450,20 @@ void graphiteMetric(char *m, float v) {
 void graphiteMetric(char *m, int v) {
   char buf[10];
   graphiteMetric(m, itoa(v, buf, 10));
+}
+
+void graphiteMetric(char *ma, float v, uint8_t t, bool inOut) {
+  char buf[32];
+
+  if (inOut) {
+    strcpy(buf, t == 0 ? "in." : "out.");
+  } else {
+    strcpy(buf, "bme");
+    strcat(buf, t == 0 ? "0." : "1.");
+  }
+  strcat(buf, ma);
+
+  graphiteMetric(buf, stringFromFloat(v));
 }
 
 void graphiteMetric(char *m, char *v) {
@@ -485,16 +489,6 @@ void graphiteMetric(char *m, char *v) {
   }
 }
 
-void prepGraphiteBuffer(char *ma, char *mb, uint8_t t, bool inOut) {
-  strcpy(packetBuffer, ma);
-  if (inOut) {
-    strcat(packetBuffer, t == 0 ? "in" : "out");
-  } else {
-    strcat(packetBuffer, t == 0 ? "0" : "1");
-  }
-  strcat(packetBuffer, mb);
-}
-
 void readAndDisplaySensors() {
   static long lastUpdate = -1000;
 
@@ -516,13 +510,9 @@ void readAndDisplaySensors() {
         pressure calculations. So it is more effcient to read
         temperature, humidity and pressure all together.
       */
-      char *strbme = "pub.luke.roomf.bme";
-      prepGraphiteBuffer(strbme, ".pressure", s, false);
-      sendGraphiteData(pressure);
-      prepGraphiteBuffer(strbme, ".temp", s, false);
-      sendGraphiteData(arraySensors[A_NEW][s][A_TEMP]);
-      prepGraphiteBuffer(strbme, ".humidity", s, false);
-      sendGraphiteData(arraySensors[A_NEW][s][A_HUMID]);
+      graphiteMetric("pressure", pressure, s, false);
+      graphiteMetric("temp", arraySensors[A_NEW][s][A_TEMP], s, false);
+      graphiteMetric("humidity", arraySensors[A_NEW][s][A_HUMID], s, false);
       displaySensor(s, A_TEMP);
       displaySensor(s, A_HUMID);
     }
