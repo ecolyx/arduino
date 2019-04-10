@@ -90,6 +90,13 @@ void serialClockDisplay() {
   serialClockDisplay(hour(), minute(), second());
 }
 
+void serialClockDisplay(time_t t, bool date) {
+  if (date) {
+    serialDateDisplay();
+  }
+  serialClockDisplay(t);
+}
+
 void serialClockDisplay(time_t t) {
   serialClockDisplay(t / 3600, (t / 60) % 60, t % 60);
 }
@@ -110,20 +117,26 @@ void serialDigits(int digits) {
   Serial.print(digits);
 }
 
+void serialDateDisplay() {
+  Serial.print(day());
+  Serial.print("/");
+  Serial.print(month());
+  Serial.print("/");
+  Serial.print(year());
+  Serial.print(" ");  
+}
+
 void displaySensor(uint8_t location, uint8_t sensor) {
   smsg_pre(0 == location ? "In " : "Out ");
   smsg_pre(arraySensors[A_NEW][location][sensor]);
   smsg(0 != sensor ? "%" : "");
   if (arraySensors[A_OLD][location][sensor] != arraySensors[A_NEW][location][sensor]) {
-    drawText(stringFromFloat(arraySensors[A_OLD][location][sensor]), 2, BLACK, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
-    drawText(stringFromFloat(arraySensors[A_NEW][location][sensor]), 2, displayDHT[location][sensor].color, 
-                                                                        displayDHT[location][sensor].column, displayDHT[location][sensor].row);
+    char buf[5];
+    String(arraySensors[A_OLD][location][sensor], 1).toCharArray(buf, 5);
+    drawText(buf, 2, BLACK, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
+    String(arraySensors[A_NEW][location][sensor], 1).toCharArray(buf, 5);
+    drawText(buf, 2, displayDHT[location][sensor].color, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
     arraySensors[A_OLD][location][sensor] = arraySensors[A_NEW][location][sensor];
     //debug_msg("c=" + String(displayDHT[location + sensor * 2].column) + ", r=" + String(displayDHT[location + sensor * 2].row));
   }
-}
-
-char *stringFromFloat(float f) {
-  sprintf(ret, "%3d.%1d", int(f), int(f * 10) % 10);
-  return ret;
 }

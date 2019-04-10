@@ -1,10 +1,10 @@
-/*************************************************** 
- * VPDMon
- * 
- * climate controller for indoor grow room
- * 
- * (C) C Stott 2018
- * 
+/***************************************************
+   VPDMon
+
+   climate controller for indoor grow room
+
+   (C) C Stott 2018
+
  ****************************************************/
 
 #include "vpdmon.h"
@@ -23,6 +23,8 @@ void setup()
   display.setTextColor(WHITE);
   display.println(init_msg);
 
+  wdt_disable();
+
   pinMode(AC_PIN, OUTPUT);
   pinMode(CT_PIN, OUTPUT);
 
@@ -33,7 +35,7 @@ void setup()
   debug_msg("Setup BME280 sensors");
   Wire.begin();
   for (int s = 0; s < 2; s++) {
-    while(!bme[s].begin()){
+    while (!bme[s].begin()) {
       Serial.println("Could not find BME280 sensor!");
       delay(1000);
     }
@@ -67,16 +69,20 @@ void setup()
 
   wifiStart();
   display.clearScreen();
-  wdt_reset();
-  wdt_enable(WDTO_8S);     // enable the watchdog
+  //  if (WATCHDOG) {
+  //    if (WATCHDOG) wdt_reset();
+  //    if (WATCHDOG) wdt_enable(WDTO_8S);     // enable the watchdog
+  //  }
   debug_msg("Setup complete");
 }
 
 void loop() {
   static uint8_t loops = 0;
   time_t tim = millis();
-  
-  wdt_reset();
+
+  if (WATCHDOG) wdt_reset();
+
+  smsg(); // blank line on serial
 
   // check for input on console
   if (Serial.available()) {
@@ -114,18 +120,24 @@ void loop() {
   //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
 
   setRelays();
-  smsg(); // blank line on serial
 
   time_t timeOfDay = now() % 86400;
   isLampOn = sunRise < timeOfDay && timeOfDay < sunSet;
   debug_msg_pre("Lamp: ");
   debug_msg(isLampOn ? "On" : "Off");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
-//  displayTime();
+  //  displayTime();
   int d = heartbeat + tim - millis();
   graphiteMetric("heartbeat", d);
+  graphiteMetric("memfree", freeRam());
   wdt_disable();
   delay(d); // regulates the loop by excluding the time to run loop code
-  wdt_reset();
-  wdt_enable(WDTO_8S);     // enable the watchdog
+  if (WATCHDOG) wdt_reset();
+  if (WATCHDOG) wdt_enable(WDTO_8S);     // enable the watchdog
+}
+
+int freeRam() {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
 }

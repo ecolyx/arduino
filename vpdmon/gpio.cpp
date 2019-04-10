@@ -2,7 +2,7 @@
  * VPDMon
  * 
  * climate controller for indoor grow room
- * 
+ *    
  * (C) C Stott 2018
  * 
  ****************************************************/
@@ -37,6 +37,7 @@ void readAndDisplaySensors() {
         pressure calculations. So it is more effcient to read
         temperature, humidity and pressure all together.
       */
+      graphiteMetric("vpd", vaporPressureDeficit(s, arraySensors[A_NEW][s][A_TEMP], arraySensors[A_NEW][s][A_HUMID]), s, false);
       graphiteMetric("pressure", pressure, s, false);
       graphiteMetric("temp", arraySensors[A_NEW][s][A_TEMP], s, false);
       graphiteMetric("humidity", arraySensors[A_NEW][s][A_HUMID], s, false);
@@ -46,6 +47,18 @@ void readAndDisplaySensors() {
         
     lastUpdate=millis();
   }
+}
+
+float vaporPressureDeficit(int s, float t, float h) {
+  float svp = 610.7 * pow(10, (7.5 * t)/(237.3 + t));
+  float vpd = (((100 - h) / 100) * svp) / 1000;
+  
+  smsg_pre("SVP: ");
+  smsg(svp);
+  graphiteMetric("svp", svp, s, false);
+  smsg_pre("VPD: ");
+  smsg(vpd);
+  return vpd;
 }
 
 void setRelays() {

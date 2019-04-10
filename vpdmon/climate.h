@@ -12,7 +12,7 @@
 #define DELAY_CC_AC       600
 // relay pins
 int DELAY_CC = DELAY_CC_DEFAULT;
-float minMaxClimates[2][2][2][2] = {{{{16, 30},{22, 30}}, {{20, 50},{26, 50}}},{{{19, 30},{25, 40}}, {{23, 70},{29, 70}}}}; // [G/F][Min/Max][D/N][T/H]);
+float minMaxClimates[2][2][2][2] = {{{{18, 30},{22, 30}}, {{22, 60},{28, 60}}},{{{20, 30},{24, 40}}, {{24, 70},{30, 70}}}}; // [G/F][Min/Max][D/N][T/H]);
 bool climateChangePending = false;
 bool isAcOn = false, isCtOn = false, isHeatOn = false, isFanOn = false;
 bool wasFanOn = false, wasCtOn = false, wasHeatOn = false, wasAcOn = false;

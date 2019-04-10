@@ -1,15 +1,16 @@
-/*************************************************** 
- * VPDMon
- * 
- * climate controller for indoor grow room
- * 
- * (C) C Stott 2018
- * 
+/***************************************************
+   VPDMon
+
+   climate controller for indoor grow room
+
+   (C) C Stott 2018
+
  ****************************************************/
 #include "vpdmon.h"
 
 bool testMode = false;
 bool have_time = false;
+bool restartRequired = false;
 
 // A UDP instance to let us send and receive packets over UDP
 const uint8_t NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
@@ -32,8 +33,8 @@ void wifiStart() {
   // check for the presence of the shield
   if (WiFi.status() == WL_NO_SHIELD) {
     msg("No WiFi");
-    while(true);
-    // don't continue
+    resetDevice();
+    while (true);
   } else {
     wifiConnect();
   }
@@ -45,7 +46,7 @@ void wifiStart() {
   debug_msg(u);
   do {
     wifiGetTime(true);
-  } while(!have_time);
+  } while (!have_time);
 
   // init delay
   if (delayCC == 0) {
@@ -54,11 +55,23 @@ void wifiStart() {
   }
 }
 
+void resetDevice() {
+  wdt_reset();
+  wdt_enable(WDTO_8S);
+}
+
 void wifiRestart() {
+  restartRequired = true;
+}
+
+void wifiRestart(bool reset) {
   WiFi.disconnect();
   msg("*** reset ESP");
   espDrv.reset();
   wifiStart();
+  restartRequired = false;
+  have_time = false;
+  //  resetDevice();
 }
 
 void wifiConnect() {
@@ -78,77 +91,113 @@ void wifiConnect() {
 void wifiGetTime() {
   wifiGetTime(false);
 }
-  
+
 void wifiGetTime(bool force) {
   static time_t t = 0;
+  static uint8_t errors = 0;
   uint8_t count = 0;
 
   debug_msg("WifiGetTime()");
 
-  if (force || now() - t >= 3600) {
+  if (force || now() - t >= 300) {
     debug_msg("send packet");
     sendNTPpacket(timeServer, true); // send an NTP packet to a time server
-  
+
     // wait for a reply for UDP_TIMEOUT miliseconds
     unsigned long startMs = millis();
     debug_msg("wait for reply");
     while (!Udp.available() && (millis() - startMs) < UDP_TIMEOUT) {
-      wdt_reset();
+      if (WATCHDOG) wdt_reset();
+      //      delay(2000);
     }
 
-    debug_msg("parse reply");
-    while (count < 30) {
-      short pkt_s = 0, pkt_r = 0;
-      if (pkt_s = Udp.parsePacket()) {
-        // We've received a packet, read the data from it
-        pkt_r = Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
+    if ((millis() - startMs) < UDP_TIMEOUT) {
+      debug_msg("parse reply");
+      while (count < 30) {
+        short pkt_s = 0, pkt_r = 0;
+        if (pkt_s = Udp.parsePacket()) {
+          // We've received a packet, read the data from it
+          smsg("Get ntp time");
+          pkt_r = Udp.read(packetBuffer, pkt_s); // read the packet into the buffer
 
-        wdt_reset();
-        graphiteMetric("udp.parsePacket", pkt_s);
-        graphiteMetric("udp.read", pkt_r);
+          if (WATCHDOG) wdt_reset();
+          //        graphiteMetric("udp.parsePacket", pkt_s);
+          //        graphiteMetric("udp.read", pkt_r);
 
-        //the timestamp starts at byte 40 of the received packet and is four bytes,
-        // or two words, long. First, esxtract the two words:
-        uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
-        uint16_t lowWord = word(packetBuffer[42], packetBuffer[43]);
-        // combine the four bytes (two words) into a long integer
-        // this is NTP time (seconds since Jan 1 1900):
-        t = highWord;
-        t = t << 16 | lowWord;
-        debug_msg_pre("Secs since 1/1/1900 = ");
-        debug_msg(t);
-    
-        // now convert NTP time into everyday time:
-        debug_msg_pre("Unix time = ");
-        // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-        const unsigned long seventyYears = 2208988800UL;
-        // subtract seventy years:
-        t = t - seventyYears;
-        // adjust timezone
-        t = t + TIMEZONE * 3600;
-        // print Unix time:
-        debug_msg(t);
-    
-        setTime(t);
-        have_time = true;
-        break;
-      } else {
-        debug_msg_pre("waiting:");
-        count++;
-        debug_msg(count);
-        if (0 == count % 10) {
-          graphiteMetric("udp.error.nopkt", 1);
+          //the timestamp starts at byte 40 of the received packet and is four bytes,
+          // or two words, long. First, esxtract the two words:
+          uint16_t highWord = word(packetBuffer[40], packetBuffer[41]);
+          uint16_t lowWord = word(packetBuffer[42], packetBuffer[43]);
+          debug_msg_pre("highWord:");
+          debug_msg(highWord);
+          debug_msg_pre("lowWord:");
+          debug_msg(lowWord);
+
+          // combine the four bytes (two words) into a long integer
+          // this is NTP time (seconds since Jan 1 1900):
+          t = highWord;
+          t = t << 16 | lowWord;
+          smsg_pre("ntp: s > 1/1/1900: ");
+          smsg(t);
+
+          if (t > 0) {
+            // now convert NTP time into everyday time:
+            // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+            const unsigned long seventyYears = 2208988800UL;
+            // subtract seventy years:
+            t = t - seventyYears;
+            // adjust timezone
+            t = t + TIMEZONE * 3600;
+            // print Unix time:
+            smsg_pre("Unix epoch time: ");
+            smsg(t);
+
+            setTime(t);
+            serialClockDisplay(t);
+
+            have_time = true;
+            errors = 0;
+            break;
+          } else {
+            smsg("time is 0, not setting");
+            if (++errors > 30) {
+              smsg("nist not replying");
+              msg("***wifiRestart");
+              errors = 0;
+              wifiRestart();
+            }
+            break;
+          }
+        } else {
+          debug_msg_pre("waiting:");
+          count++;
+          debug_msg(count);
+          if (0 == count % 10) {
+            Serial.print("udp.error.nopkt");
+          }
+          if (count >= 30) {
+            Serial.print("udp.error.restart");
+            msg("***wifiRestart");
+            wifiRestart();
+            break;
+          }
+          delay(1000);
         }
-        if (count >= 30) {
-          graphiteMetric("udp.error.restart", 2);
-          msg("***wifiRestart");
-          wifiRestart();
-        }
-        delay(1000);
       }
+    } else { // UDP_TIMEOUT
+      smsg("UDP Timeout reached: restarting");
+      wifiRestart();
+      //wdt_reset();
+      //wdt_enable(WDTO_8S);
     }
+    Udp.flush();
+    Udp.stop();
   }
+  gtim = now() - TIMEZONE * 3600;
   displayTime();
+  if (restartRequired) {
+    wifiRestart(true);
+  }
 }
 
 // send an NTP request to the time server at the given address
@@ -172,7 +221,7 @@ void sendNTPpacket(char *ntpSrv, bool isNew) {
 
   // all NTP fields have been given values, now
   // you can send a packet requesting a timestamp:
-  wdt_reset();
+  if (WATCHDOG) wdt_reset();
   debug_msg_pre("begin packet: ");
   u_b = Udp.beginPacket(ntpSrv, 123);
   debug_msg(u_b);
@@ -182,128 +231,20 @@ void sendNTPpacket(char *ntpSrv, bool isNew) {
     debug_msg("end packet");
     u_e = Udp.endPacket();
     debug_msg("sending graphite write/end");
-    graphiteMetric("udp.write", u_w);
-    graphiteMetric("udp.endpacket", u_e);
+//    graphiteMetric("udp.write", u_w);
+//    graphiteMetric("udp.endpacket", u_e);
 
     debug_msg("checking packet size");
     if (NTP_PACKET_SIZE != u_w) {
       msg("Error writing UDP packet");
-      wifiRestart();
+      wifiRestart(true);
     }
     debug_msg("checking for errors");
     if (u_e == 0) {
       msg("Error nothing sent");
     }
   } else {
-    debug_msg("sending graphite begin");
-    graphiteMetric("udp.beginpacket", u_b);
     msg("Error opening UDP port");
-    wifiRestart();
+    wifiRestart(true);
   }
-}
-
-bool processSyncMessage() {
-#if 0
-  bool dateFormat = false;
-  
-  // if time sync available from serial port, update time and return true
-  while (Serial.available() > 0) { // time message consists of header &  up to 10 ASCII digits
-    char c = Serial.read();
-    //Serial.print(c);
-    if (c == TIME_HEADER) {
-      time_t pctime = 0;
-      time_t h = 0, t = 0, s = 0, d = 0, m = 0, y = 0;
-      while (Serial.available() > 0) {
-        c = Serial.read();
-        //Serial.print(c);
-        if (c >= '0' && c <= '9') {
-          pctime = (10 * pctime) + (c - '0') ; // convert digits to a number
-          //Serial.print("pctime = ");
-          //debug_msg(pctime);
-        }
-        if (dateFormat || c == ':' || c == ' ') {
-          //debug_msg("\" :\" or dateFormat");
-          dateFormat = true;
-          if (c == ':' || c == ' ' || Serial.available() == 0) {
-            //debug_msg("\" :\"");
-            if (h == 0) {
-              h = pctime;
-              pctime = 0;
-              //debug_msg("set hours");
-            } else if (t == 0) {
-              t = pctime + 1;
-              pctime = 0;
-              //debug_msg("set mins");
-            } else if (s == 0) {
-              s = pctime + 1;
-              pctime = 0;
-              //debug_msg("set secs");
-            } else if (d == 0) {
-              d = pctime;
-              pctime = 0;
-              //debug_msg("set days");
-            } else if (m == 0) {
-              m = pctime;
-              pctime = 0;
-              //debug_msg("set months");
-            } else {
-              y = pctime;
-              //debug_msg("set years");
-            }
-            if (Serial.available() == 0) {
-              setTime(h, t == 0 ? 0 : t - 1, s == 0 ? 0 : s - 1, d == 0 ? day() : d, m == 0 ? month() : m, y == 0 ? year() : y);
-              Serial.print("new time: ");
-              serialClockDisplay();
-              pctime = now();
-            }
-          }
-        }
-        
-        if (c == 'P') {
-          Serial.print("Temp = ");
-          Serial.println(pctime);
-          testMode = true;
-          arraySensors[A_NEW][A_IN][A_TEMP] = (float)pctime;
-          displaySensor(A_IN, A_TEMP);
-          Serial.println("huh!");
-          pctime = now();
-        }
-        
-        if (c == 'H') {
-          Serial.print("Humidity = ");
-          Serial.println(pctime);
-          testMode = true;
-          arraySensors[A_NEW][A_IN][A_HUMID] = (float)pctime; // [inside][new][humidity]
-          displaySensor(A_IN, A_HUMID);
-          pctime = now();
-        }
-
-        if (c == 'D') {
-          Serial.print("Delay = ");
-          Serial.println(pctime);
-          testMode = true;
-          DELAY_CC = pctime; // adjust delay for faster testing
-          delayCC = now() + DELAY_CC;
-          pctime = now();
-        }
-
-        if (c == 'F') {
-          Serial.println("Test mode exit");
-          testMode = false;
-          pctime = now();
-        }
-
-        if (c == 'R') {
-          Serial.println("Reset lcd");
-          displayReset();
-          pctime = now();
-        }
-      }
-      setTime(pctime); // Sync Arduino clock to the time received on the serial port
-    }
-  }
-
-  return testMode;
-#endif
-  return false;
 }

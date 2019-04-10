@@ -9,6 +9,7 @@
 #ifndef INCL_VPDMON_H
 #define INCL_VPDMON_H
 
+#include <stdio.h>
 #include <Time.h>
 #include <TimeAlarms.h>
 #include <SPI.h>
@@ -25,21 +26,18 @@ extern SoftwareSerial Serial1(6, 7); // RX, TX
 #endif
 
 #define setTextScale setTextSize
-//#define debug_msg(x) Serial.println(x)
-//#define debug_msg_pre(x) Serial.print(x)
-//#define debug_msg_pre_h(x) Serial.print(x,HEX)
+#if 0
+#define debug_msg(x) Serial.println(x)
+#define debug_msg_pre(x) Serial.print(x)
+#define debug_msg_pre_h(x) Serial.print(x,HEX)
+#else
 #define debug_msg(x)
 #define debug_msg_pre(x)
 #define debug_msg_pre_h(x)
+#endif
 #define smsg(x) Serial.println(x)
 #define smsg_pre(x) Serial.print(x)
 #define smsg_pre_h(x) Serial.print(x,HEX)
-//#define nmsg(x)
-//#define nmsg_pre(x)
-//#define nmsg_pre_h(x)
-#define nmsg(x) Serial.println(x)
-#define nmsg_pre(x) Serial.print(x)
-#define nmsg_pre_h(x) Serial.print(x,HEX)
 #define lmsg(x) display.println(x)
 #define lmsg_pre(x) display.print(x)
 #define lmsg_pre_h(x) display.print(x,HEX)
@@ -54,7 +52,7 @@ extern SoftwareSerial Serial1(6, 7); // RX, TX
 #define CT_PIN          A3 // cooltube
 #define HT_PIN          A2 // heater
 #define FN_PIN          A1 // fan (extractor)
-
+#define WATCHDOG true
 
 extern int DELAY_CC;
 extern float arraySensors[2][LOCATIONS][2]; // old/new, in/out, t/h
@@ -71,6 +69,7 @@ extern BME280I2C bme[2];                   // Default : forced mode, standby tim
 extern bool have_time;
 extern WiFiEspUDP Udp;
 extern WiFiEspClient client;
+extern uint64_t gtim;
 
 // how many locations
 #define LOCATIONS   2
@@ -105,9 +104,12 @@ void checkClimate();
 void makeCooler();
 void makeHotter();
 void wifiStart();
+void resetDevice();
 void wifiRestart();
+void wifiRestart(bool reset);
 void wifiConnect();
-void wifiGetTime();void wifiGetTime(bool force);
+void wifiGetTime();
+void wifiGetTime(bool force);
 void sendNTPpacket(char *ntpSrv, bool isNew);
 bool processSyncMessage();
 void displayReset();
@@ -121,16 +123,21 @@ void drawText(char *text, uint16_t c, uint8_t x, uint8_t y);
 void drawText(char *text, uint8_t f, uint16_t color, uint8_t x, uint8_t y);
 void serialClockDisplay();
 void serialClockDisplay(time_t t);
+void serialClockDisplay(time_t t, bool date);
 void serialClockDisplay(time_t h, time_t m, time_t s);
+void serialDateDisplay();
 void serialDigits(int digits);
 void displaySensor(uint8_t location, uint8_t sensor);
 void readAndDisplaySensors();
+float vaporPressureDeficit(int s, float t, float h);
 void setRelays();
 char *switchOrWait(bool w, bool new_v, bool *old_v, uint8_t pin);
 void graphiteMetric(char *m, float v);
 void graphiteMetric(char *m, int v);
 void graphiteMetric(char *ma, float v, uint8_t t, bool inOut);
+//void graphiteMetric(char *ma, float v, uint8_t t, bool inOut, bool hundreds);
 void graphiteMetric(char *m, char *v);
-char *stringFromFloat(float f);
+//char *stringFromFloat(float f);
+//char *stringFromFloat2(float f);
 
 #endif
