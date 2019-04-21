@@ -8,8 +8,7 @@
  ****************************************************/
 #include "vpdmon.h"
 
-uint64_t gtim; // buffer for graphite epoch time, keeps stats in sync
-
+uint64_t gtim; // buffer for graphite epoch time, keeps stats in sync each loop
 
 void graphiteMetric(char *m, float v) {
   char buf[10];
@@ -48,25 +47,24 @@ void graphiteMetric(char *m, char *v) {
   strcat(buf, "\n");
 
   if (have_time) {
+    if (WATCHDOG) wdt_reset();
     signed int cc = client.connect("ec2-54-206-89-240.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
     debug_msg_pre("client.connect: ");
     debug_msg(cc);
 
     if (cc != 0 && strlen(buf) != client.write(buf, strlen(buf))) {
       if (cc != 0) {
-        smsg("TCP write error");
-        wifiRestart();
+        smsg("client.connect error");
+      } else {
+        smsg("client.write error");
       }
-
-      smsg("client.write error");
     } else {
       smsg_pre((char *)buf);
     }
     client.flush();
     client.stop();
   } else {
-    if (!have_time) {
-      smsg("not sent, ***no time");
-    }
+    smsg_pre(m);
+    smsg(" not sent, *time not set");
   }
 }

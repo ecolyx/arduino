@@ -19,9 +19,11 @@ struct s_DisplayDHT {
   uint16_t color;
   uint8_t column;
   uint8_t row;
-} displayDHT[2][2] = {{{GREEN, 0, 0},{BLUE, 10, 0}},{{GREEN, 0, 3},{BLUE, 10, 3}}};
+} displayDHT[2][2] = {{{GREEN, 2, 0},{BLUE, 12, 0}},{{GREEN, 2, 3},{BLUE, 12, 3}}};
 
 TFT_ILI9163C display = TFT_ILI9163C(53, 9);
+
+String stringBuf;
 
 // static char return buffer for strings
 char ret[6];
@@ -33,41 +35,93 @@ void displayReset() {
 }
 
 void displayTime() {
-  static time_t lastTime = now() % 86400;
-  static float oldTmin = 0, oldTmax = 0;
-  static float oldHmin = 0, oldHmax = 0;
-
-  lastTime = now() % 86400;
-  digitalClockDisplay(lastTime, ORANGE);
+  displayTime(now() % 86400, ORANGE);
 }
 
-void digitalClockDisplay(time_t t, uint16_t color) {
-  serialClockDisplay(t);
-
-  digitalClockDisplay(t, color, 24, 40);  
+void displayTime(time_t t, bool serialOnly) {
+  displayTime(t, 0, 0, 0, serialOnly);  
 }
 
-void digitalClockDisplay(time_t t, uint16_t color, uint8_t x, uint8_t y) {
+void displayTime(time_t t, uint16_t color) {
+  displayTime(t, color, 36, 42);  
+}
+
+void displayTime(time_t t, uint16_t color, uint8_t x, uint8_t y) {
+  displayTime(t, color, x, y, false);  
+}
+
+void displayTime(time_t t, uint16_t color, uint8_t x, uint8_t y, bool serialOnly) {
   const time_t HR = 3600;
   uint8_t h = t / HR;
   uint8_t m = (t - h * HR) / 60;
-  digitalClockDisplay(h, m, color, x, y);  
+  displayTime(h, m, color, x, y, serialOnly);  
 }
 
-void digitalClockDisplay(uint8_t h, uint8_t m, uint16_t color) {
-  digitalClockDisplay(h, m, color, 24, 40);
+void displayTime(uint8_t h, uint8_t m, uint16_t color) {
+  displayTime(h, m, color, 36, 42);
 }
 
-void digitalClockDisplay(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y) {
+void displayTime(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y) {
+  displayTime(h, m, color, x, y, false);
+}
+
+void displayTime(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y, bool serialOnly) {
   // digital clock display of the time
   char buf[6];
-  display.fillRect(x, y, 70, 16, BLACK);
-  display.setCursor(x, y);
-  display.setTextScale(2);
-  display.setTextColor(color);
-  display.setCursor(x, y);
-  sprintf(buf, "%02d:%02d", h, m);
-  display.print(buf);
+  getTimeString(buf, h, m);
+  Serial.println(buf);
+  if (!serialOnly) {
+    display.fillRect(x, y, 70, 16, BLACK);
+    display.setCursor(x, y);
+    display.setTextScale(2);
+    display.setTextColor(color);
+    display.setCursor(x, y);
+    display.print(buf);
+  }
+}
+
+char *getTimeString(char *buf, time_t h, time_t m, time_t s) {
+  getTimeString(buf, h, m);
+  strcat(buf, ":");
+  catDigits(buf, s);
+  return buf;
+}
+
+char *getTimeString(char *buf, time_t h, time_t m) {
+  strcpy(buf, "");
+  catDigits(buf, h);
+  strcat(buf, ":");
+  catDigits(buf, m);
+  return buf;
+}
+
+void catDigits(char *buf, int d) {
+  char buf2[3];
+  if (d < 10) {
+    strcat(buf, "0");
+  }
+  strcat(buf, itoa(d, buf2, 10));
+}
+
+void serialDateDisplay() {
+  Serial.print(day());
+  Serial.print("/");
+  Serial.print(month());
+  Serial.print("/");
+  Serial.print(year());
+  Serial.print(" ");  
+}
+
+void displaySensor(uint8_t location, uint8_t sensor) {
+  smsg_pre(0 == location ? "In " : "Out ");
+  smsg_pre(arraySensors[A_NEW][location][sensor]);
+  smsg(0 != sensor ? "%" : "°");
+  if (arraySensors[A_OLD][location][sensor] != arraySensors[A_NEW][location][sensor]) {
+    char buf[5];
+    display.fillRect(displayDHT[location][sensor].column * 6, displayDHT[location][sensor].row * 8, 56, 16, BLACK);
+    String(arraySensors[A_NEW][location][sensor], 1).toCharArray(buf, 5);
+    drawText(buf, 2, displayDHT[location][sensor].color, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
+  }
 }
 
 void drawText(char *text, uint8_t f, uint8_t r, uint8_t g, uint8_t b, uint8_t x, uint8_t y) {
@@ -84,59 +138,4 @@ void drawText(char *text, uint8_t f, uint16_t color, uint8_t x, uint8_t y) {
   display.setTextColor(color);
   display.setCursor(x * 6, y * 8);
   display.print(text);
-}
-
-void serialClockDisplay() {
-  serialClockDisplay(hour(), minute(), second());
-}
-
-void serialClockDisplay(time_t t, bool date) {
-  if (date) {
-    serialDateDisplay();
-  }
-  serialClockDisplay(t);
-}
-
-void serialClockDisplay(time_t t) {
-  serialClockDisplay(t / 3600, (t / 60) % 60, t % 60);
-}
-
-void serialClockDisplay(time_t h, time_t m, time_t s) {
-  // digital clock display of the time
-  Serial.print(h);
-  serialDigits(m);
-  serialDigits(s);
-  Serial.println();
-}
-
-void serialDigits(int digits) {
-  // utility function for digital clock display: prints preceding colon and leading 0
-  Serial.print(":");
-  if (digits < 10)
-    Serial.print('0');
-  Serial.print(digits);
-}
-
-void serialDateDisplay() {
-  Serial.print(day());
-  Serial.print("/");
-  Serial.print(month());
-  Serial.print("/");
-  Serial.print(year());
-  Serial.print(" ");  
-}
-
-void displaySensor(uint8_t location, uint8_t sensor) {
-  smsg_pre(0 == location ? "In " : "Out ");
-  smsg_pre(arraySensors[A_NEW][location][sensor]);
-  smsg(0 != sensor ? "%" : "");
-  if (arraySensors[A_OLD][location][sensor] != arraySensors[A_NEW][location][sensor]) {
-    char buf[5];
-    String(arraySensors[A_OLD][location][sensor], 1).toCharArray(buf, 5);
-    drawText(buf, 2, BLACK, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
-    String(arraySensors[A_NEW][location][sensor], 1).toCharArray(buf, 5);
-    drawText(buf, 2, displayDHT[location][sensor].color, displayDHT[location][sensor].column, displayDHT[location][sensor].row);
-    arraySensors[A_OLD][location][sensor] = arraySensors[A_NEW][location][sensor];
-    //debug_msg("c=" + String(displayDHT[location + sensor * 2].column) + ", r=" + String(displayDHT[location + sensor * 2].row));
-  }
 }

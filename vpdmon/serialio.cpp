@@ -8,6 +8,7 @@
  ****************************************************/
 #include "vpdmon.h"
 
+bool testMode = false;
 bool processSyncMessage() {
 #if 0
   bool dateFormat = false;
@@ -59,7 +60,7 @@ bool processSyncMessage() {
             if (Serial.available() == 0) {
               setTime(h, t == 0 ? 0 : t - 1, s == 0 ? 0 : s - 1, d == 0 ? day() : d, m == 0 ? month() : m, y == 0 ? year() : y);
               Serial.print("new time: ");
-              serialClockDisplay();
+              displayTime();
               pctime = now();
             }
           }

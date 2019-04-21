@@ -35,6 +35,15 @@ extern SoftwareSerial Serial1(6, 7); // RX, TX
 #define debug_msg_pre(x)
 #define debug_msg_pre_h(x)
 #endif
+#if 1
+#define ndebug_msg(x) Serial.println(x)
+#define ndebug_msg_pre(x) Serial.print(x)
+#define ndebug_msg_pre_h(x) Serial.print(x,HEX)
+#else
+#define ndebug_msg(x)
+#define ndebug_msg_pre(x)
+#define ndebug_msg_pre_h(x)
+#endif
 #define smsg(x) Serial.println(x)
 #define smsg_pre(x) Serial.print(x)
 #define smsg_pre_h(x) Serial.print(x,HEX)
@@ -53,7 +62,9 @@ extern SoftwareSerial Serial1(6, 7); // RX, TX
 #define HT_PIN          A2 // heater
 #define FN_PIN          A1 // fan (extractor)
 #define WATCHDOG true
+#define ESPBAUD   115200
 
+extern const time_t sunRise, sunSet;
 extern int DELAY_CC;
 extern float arraySensors[2][LOCATIONS][2]; // old/new, in/out, t/h
 extern float minMaxClimates[2][2][2][2]; // [G/F][Min/Max][D/N][T/H]);
@@ -108,25 +119,30 @@ void resetDevice();
 void wifiRestart();
 void wifiRestart(bool reset);
 void wifiConnect();
+void wifiCheckTime();
 void wifiGetTime();
 void wifiGetTime(bool force);
-void sendNTPpacket(char *ntpSrv, bool isNew);
+void sendNTPpacket(char *ntpSrv);
+//bool sendNTPpacket(char *ntpSrv);
 bool processSyncMessage();
 void displayReset();
 void displayTime();
-void digitalClockDisplay(time_t t, uint16_t color);
-void digitalClockDisplay(time_t t, uint16_t color, uint8_t x, uint8_t y);
-void digitalClockDisplay(uint8_t h, uint8_t m, uint16_t color);
-void digitalClockDisplay(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y);
+void displayTime(time_t t);
+void displayTime(time_t t, bool date);
+void displayTime(time_t h, time_t m, time_t s);
+void displayTime(time_t t, uint16_t color);
+void displayTime(time_t t, uint16_t color, uint8_t x, uint8_t y);
+void displayTime(time_t t, uint16_t color, uint8_t x, uint8_t y, bool serialOnly);
+void displayTime(uint8_t h, uint8_t m, uint16_t color);
+void displayTime(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y);
+void displayTime(uint8_t h, uint8_t m, uint16_t color, uint8_t x, uint8_t y, bool serialOnly);
 void drawText(char *text, uint8_t f, uint8_t r, uint8_t g, uint8_t b, uint8_t x, uint8_t y);
 void drawText(char *text, uint16_t c, uint8_t x, uint8_t y);
 void drawText(char *text, uint8_t f, uint16_t color, uint8_t x, uint8_t y);
-void serialClockDisplay();
-void serialClockDisplay(time_t t);
-void serialClockDisplay(time_t t, bool date);
-void serialClockDisplay(time_t h, time_t m, time_t s);
 void serialDateDisplay();
-void serialDigits(int digits);
+char *getTimeString(char *buf, time_t h, time_t m, time_t s);
+char *getTimeString(char *buf, time_t h, time_t m);
+void catDigits(char *buf, int d);
 void displaySensor(uint8_t location, uint8_t sensor);
 void readAndDisplaySensors();
 float vaporPressureDeficit(int s, float t, float h);

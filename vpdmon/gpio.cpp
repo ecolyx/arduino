@@ -49,18 +49,6 @@ void readAndDisplaySensors() {
   }
 }
 
-float vaporPressureDeficit(int s, float t, float h) {
-  float svp = 610.7 * pow(10, (7.5 * t)/(237.3 + t));
-  float vpd = (((100 - h) / 100) * svp) / 1000;
-  
-  smsg_pre("SVP: ");
-  smsg(svp);
-  graphiteMetric("svp", svp, s, false);
-  smsg_pre("VPD: ");
-  smsg(vpd);
-  return vpd;
-}
-
 void setRelays() {
   char strDisp[16]; // = {'A', 0, 0, ' ', 'C', 0, 0, ' ', 'H', '0', '0', ' ', 'F','0', '0', 0};
   bool wait = delayCC > now();
@@ -69,12 +57,18 @@ void setRelays() {
 
   strcpy(strDisp, "A");
   strcat(strDisp, switchOrWait(wait, isAcOn, &wasAcOn, AC_PIN));
-  strcat(strDisp, "C");
+  strcat(strDisp, " C");
   strcat(strDisp, switchOrWait(wait, isCtOn, &wasCtOn, CT_PIN));
-  strcat(strDisp, "H00 F00");
+  strcat(strDisp, " H");
+  strcat(strDisp, switchOrWait(wait, isHeatOn, &wasHeatOn, HT_PIN));
+  strcat(strDisp, " F00");
   smsg(strDisp);
+  graphiteMetric("sw.lamp", isLampOn);
+  graphiteMetric("sw.aircon", isAcOn);
+  graphiteMetric("sw.ctfan", isCtOn);
+  graphiteMetric("sw.heater", isHeatOn);
   
-  display.fillRect(0, 80, 128, 8, BLACK);
+  display.fillRect(0, 80, 136, 8, BLACK);
   drawText(strDisp, (uint16_t)RED | BLUE, 0, 10);
 
   if (!wait) {
@@ -101,8 +95,7 @@ char *switchOrWait(bool w, bool new_v, bool *old_v, uint8_t pin) {
       climateChangePending = false;
     }
   }
-  strcpy(ret, new_v == 0 ? "0" : "1");
-  strcat(ret, old_v == 0 ? "0" : "1");
-  strcat(ret, " ");
+  strcpy(ret, *old_v == 0 ? "0" : "1");
+  strcat(ret, new_v == 0 ? "0" : "1");
   return ret;
 }

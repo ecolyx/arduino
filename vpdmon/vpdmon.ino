@@ -18,6 +18,8 @@ void setup()
   char const *init_msg = "init..";
   // initialize serial for debugging
   Serial.begin(115200);
+  // initialize serial for ESP module
+  Serial1.begin(ESPBAUD);
   debug_msg(init_msg);
   displayReset();
   display.setTextColor(WHITE);
@@ -27,9 +29,11 @@ void setup()
 
   pinMode(AC_PIN, OUTPUT);
   pinMode(CT_PIN, OUTPUT);
+  pinMode(HT_PIN, OUTPUT);
 
-  digitalWrite(AC_PIN, true);
-  digitalWrite(CT_PIN, true);
+  digitalWrite(AC_PIN, false);
+  digitalWrite(CT_PIN, false);
+  digitalWrite(HT_PIN, false);
 
   // set up the bme sensor
   debug_msg("Setup BME280 sensors");
@@ -43,11 +47,11 @@ void setup()
 
   setTime(sunRise);
   isGrowSeason = GROWMINPERIOD < sunSet - sunRise;
-  isLampOn = true;
+  isLampOn = false;
   msg_pre("Sunset: ");
-  serialClockDisplay(sunSet);
+  displayTime(sunSet, true);
   msg_pre("Sunrise: ");
-  serialClockDisplay(sunRise);
+  displayTime(sunRise, true);
   msg_pre("grow - on: ");
   msg_pre(minMaxClimates[A_GROW][A_MIN][A_DAY][A_TEMP]);//[G/F][Min/Max][D/N][T/H]
   msg_pre("- ");
@@ -67,12 +71,11 @@ void setup()
   msg_pre("delayCC: ");
   msg(delayCC);
 
+  if (WATCHDOG) wdt_reset();
+  if (WATCHDOG) wdt_enable(WDTO_8S);     // enable the watchdog
+
   wifiStart();
   display.clearScreen();
-  //  if (WATCHDOG) {
-  //    if (WATCHDOG) wdt_reset();
-  //    if (WATCHDOG) wdt_enable(WDTO_8S);     // enable the watchdog
-  //  }
   debug_msg("Setup complete");
 }
 
@@ -89,7 +92,11 @@ void loop() {
     processSyncMessage();
   }
 
-  wifiGetTime();
+  wifiCheckTime();
+
+  smsg_pre("millis(): ");
+  smsg(millis());
+  graphiteMetric("sw.restart", millis() < 60000 ? -5 : 0);
 
   readAndDisplaySensors();
 
@@ -110,19 +117,12 @@ void loop() {
   display.println(minMaxClimates[isGrowSeason][A_MAX][isLampOn][A_TEMP]);
   display.print(isGrowSeason ? "Grow - " : "Flower - ");
   display.print(isLampOn ? "Day" : "Night");
+
   // check the climate
   checkClimate();
 
-  // might be useful for VPD
-  //  hicRoomOld = hicRoom;
-  //  hicRoom = roomSensor.computeHeatIndex(tRoom, hRoom, false);
-  //  hicOutOld = hicOut;
-  //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
-
   setRelays();
 
-  time_t timeOfDay = now() % 86400;
-  isLampOn = sunRise < timeOfDay && timeOfDay < sunSet;
   debug_msg_pre("Lamp: ");
   debug_msg(isLampOn ? "On" : "Off");
   debug_msg(isGrowSeason ? "Grow" : "Flower");
@@ -130,6 +130,7 @@ void loop() {
   int d = heartbeat + tim - millis();
   graphiteMetric("heartbeat", d);
   graphiteMetric("memfree", freeRam());
+
   wdt_disable();
   delay(d); // regulates the loop by excluding the time to run loop code
   if (WATCHDOG) wdt_reset();

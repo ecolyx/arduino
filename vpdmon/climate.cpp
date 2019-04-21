@@ -18,6 +18,7 @@ void checkClimate() {
     debug_msg("makeCooler");
   } else {
     // everything is fine
+    delayCC = 0;
     isAcOn = false;
     isFanOn = false;
     isHeatOn = false;
@@ -47,9 +48,28 @@ void makeCooler() {
 void makeHotter() {
   if (isAcOn) {
     isAcOn = false;
+    delayCC = 0;
   } else if (isCtOn) {
     isCtOn = false;
   } else {
     isHeatOn = true;
   }
+}
+
+float vaporPressureDeficit(int s, float t, float h) {
+  // might be useful for VPD
+  //  hicRoomOld = hicRoom;
+  //  hicRoom = roomSensor.computeHeatIndex(tRoom, hRoom, false);
+  //  hicOutOld = hicOut;
+  //  hicOut = outsideSensor.computeHeatIndex(tOut, hOut, false);
+
+  float svp = 610.7 * pow(10, (7.5 * t)/(237.3 + t));
+  float vpd = (((100 - h) / 100) * svp) / 1000;
+  
+  smsg_pre("SVP: ");
+  smsg(svp);
+  graphiteMetric("svp", svp, s, false);
+  smsg_pre("VPD: ");
+  smsg(vpd);
+  return vpd;
 }
