@@ -48,21 +48,29 @@ void graphiteMetric(char *m, char *v) {
 
   if (have_time) {
     if (WATCHDOG) wdt_reset();
-    signed int cc = client.connect("ec2-54-206-89-240.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
-    debug_msg_pre("client.connect: ");
-    debug_msg(cc);
+    signed int cc = client.connect("ec2-13-54-106-144.ap-southeast-2.compute.amazonaws.com", 2003); //Try to connect to TCP Server
+    ndebug_msg_pre("client.connect: ");
+    ndebug_msg(cc);
 
-    if (cc != 0 && strlen(buf) != client.write(buf, strlen(buf))) {
-      if (cc != 0) {
-        smsg("client.connect error");
-      } else {
+    if (cc != 0) {
+      if (WATCHDOG) wdt_reset();
+      int w = client.write(buf, strlen(buf));
+      ndebug_msg_pre("client.write: ");
+      ndebug_msg(w);
+
+      if (strlen(buf) != w) {
         smsg("client.write error");
+      } else {
+        smsg_pre((char *)buf);
       }
     } else {
-      smsg_pre((char *)buf);
+      smsg("client.connect error");
     }
+    if (WATCHDOG) wdt_reset();
     client.flush();
+    if (WATCHDOG) wdt_reset();
     client.stop();
+    if (WATCHDOG) wdt_reset();
   } else {
     smsg_pre(m);
     smsg(" not sent, *time not set");

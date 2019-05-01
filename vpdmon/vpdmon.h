@@ -117,7 +117,6 @@ void makeHotter();
 void wifiStart();
 void resetDevice();
 void wifiRestart();
-void wifiRestart(bool reset);
 void wifiConnect();
 void wifiCheckTime();
 void wifiGetTime();

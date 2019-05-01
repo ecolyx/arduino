@@ -23,15 +23,21 @@ WiFiEspUDP Udp;
 WiFiEspClient client;
 
 void wifiCheckTime() {
+  wifiGetTime();
+
   if (wifiErrors > 0) {
     if (wifiErrors > 30) {
       resetDevice();  
     } else {
       wifiRestart();
     }
-  } else {
-    wifiGetTime();
   }
+
+  gtim = now() - TIMEZONE * 3600;
+
+  time_t timeOfDay = now() % 86400;
+  isLampOn = sunRise < timeOfDay && timeOfDay < sunSet;
+  displayTime();
 }
 
 void wifiStart() {
@@ -54,6 +60,14 @@ void wifiStart() {
   debug_msg(u);
   do {
     wifiGetTime(true);
+    if (!have_time) {
+      if (WATCHDOG) wdt_disable();
+      delay(30000);
+      if (WATCHDOG) {
+        wdt_reset();
+        wdt_enable(WDTO_8S);
+      }
+    }
   } while (!have_time);
 
   // init delay
@@ -71,20 +85,17 @@ void resetDevice() {
 void wifiRestart() {
   static uint8_t count = 0;
   if (count++ > 10) {
-    wifiRestart(true);
+    WiFi.disconnect();
+    msg("*** reset ESP");
+    Udp.stop();
+    espDrv.reset();
+    wifiStart();
+    if (wifiErrors == 0) {
+      count = 0;
+    }
   } else {
     resetDevice();
   }
-}
-
-void wifiRestart(bool noreset) {
-  WiFi.disconnect();
-  msg("*** reset ESP");
-  Udp.stop();
-  espDrv.reset();
-  wifiStart();
-  have_time = false;
-  //  resetDevice();
 }
 
 void wifiConnect() {
@@ -105,11 +116,7 @@ void wifiConnect() {
 void wifiGetTime() {
   do {
     wifiGetTime(false);
-  } while (!have_time && wifiErrors++ < 6);
-  
-  if (!have_time) {
-    resetDevice();  
-  }
+  } while (!have_time && (wifiErrors++ % 6) < 5);
 }
 
 #if 1
@@ -151,12 +158,6 @@ void wifiGetTime(bool force) {
     have_time = true;
     wifiErrors = 0;
   }
-
-  gtim = now() - TIMEZONE * 3600;
-
-  time_t timeOfDay = now() % 86400;
-  isLampOn = sunRise < timeOfDay && timeOfDay < sunSet;
-  displayTime();
 }
 #else
 void wifiGetTime(bool force) {
